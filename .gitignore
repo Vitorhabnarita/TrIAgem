@@ -1,0 +1,35 @@
+# .gitignore para projeto Python/FastAPI
+
+# Ambientes virtuais
+venv/
+.venv/
+env/
+.env
+
+# Bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Distribuição / packaging
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Banco de dados local
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# Cobertura de testes
+.coverage
+htmlcov/
+.pytest_cache/
+
