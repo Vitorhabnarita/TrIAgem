@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     admin_api_key: str = Field(default="", repr=False)   # protege /admin/*
     token_triagem_validade_horas: int = 72  # validade do link do WhatsApp
 
+    # Login 1-click da demonstração comercial (clínica demo do seed). DESLIGADO por padrão e
+    # sempre inoperante quando ambiente == 'producao'. As senhas nunca vão para o frontend.
+    demo_login_habilitado: bool = False
+
     # -----------------------------------------------------------------------
     # Google Gemini (Triagem Pré-Consulta)
     # -----------------------------------------------------------------------

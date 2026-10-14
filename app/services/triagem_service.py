@@ -34,6 +34,7 @@ def montar_dados(formulario: FormularioTriagem, pet: Pet) -> DadosTriagem:
         vacinacao_em_dia=formulario.vacinacao_em_dia,
         vermifugo_em_dia=formulario.vermifugo_em_dia,
         convivio_outros_animais=formulario.convivio_outros_animais,
+        manejo_preventivo=formulario.manejo_preventivo or "",
         medicamento_continuo=formulario.medicamento_continuo,
         aspecto_urina_fezes=formulario.aspecto_urina_fezes,
         alteracao_peso_apetite=formulario.alteracao_peso_apetite,
@@ -42,6 +43,9 @@ def montar_dados(formulario: FormularioTriagem, pet: Pet) -> DadosTriagem:
         relato_livre_tutor=formulario.relato_livre_tutor,
         sintomas_marcados=[s.nome_sintoma for s in sintomas],
         sintomas_urgencia=[s.nome_sintoma for s in sintomas if s.alerta_urgencia],
+        peso_kg=float(pet.peso_kg) if pet.peso_kg is not None else None,
+        porte=pet.porte,
+        status_reprodutivo=pet.status_reprodutivo,
     )
 
 

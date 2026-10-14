@@ -144,6 +144,27 @@ class PetIn(BaseModel):
     raca: str = Field(default="Sem raça definida", max_length=100)
     sexo: Literal["Macho", "Fêmea", "Não informado"] = "Não informado"
     idade_texto: str = Field(default="Não informada", max_length=50)
+    # Dados clínicos veterinários (opcionais)
+    peso_kg: Optional[float] = Field(default=None, gt=0, le=250)
+    porte: Optional[Literal["Mini", "Pequeno", "Médio", "Grande", "Gigante"]] = None
+    status_reprodutivo: Optional[Literal["Castrado", "Inteiro"]] = None
+
+
+class PetResumoOut(_Orm):
+    nome: str
+    especie: str
+    raca: str
+    sexo: str
+    idade_texto: str
+    peso_kg: Optional[float] = None
+    porte: Optional[str] = None
+    status_reprodutivo: Optional[str] = None
+
+
+class TutorComPetsOut(BaseModel):
+    nome: str
+    telefone: str
+    pets: list[PetResumoOut]
 
 
 class ConsultaAgendar(BaseModel):
@@ -166,6 +187,12 @@ class ConsultaFilaItem(BaseModel):
     agendada_para: Optional[datetime]
     pet_nome: str
     especie: str
+    pet_raca: str = ""
+    pet_sexo: str = ""
+    pet_idade: str = ""
+    pet_peso_kg: Optional[float] = None
+    pet_porte: Optional[str] = None
+    pet_status_reprodutivo: Optional[str] = None
     tutor_nome: str
     tutor_telefone: str
     medico: MedicoMini
@@ -212,6 +239,9 @@ class PetPublicoOut(_Orm):
     raca: str
     sexo: str
     idade_texto: str
+    peso_kg: Optional[float] = None
+    porte: Optional[str] = None
+    status_reprodutivo: Optional[str] = None
 
 
 class SintomaPublicoOut(_Orm):
@@ -239,6 +269,8 @@ class TriagemSubmissao(BaseModel):
     vacinacao_em_dia: bool
     vermifugo_em_dia: bool
     convivio_outros_animais: bool
+    # Detalhes veterinários opcionais (vacinas, vermífugo, ectoparasitas, acesso à rua, contactantes)
+    manejo_preventivo: Optional[str] = Field(default=None, max_length=500)
     # RN-002 — obrigatório e explícito ("Nenhum" deve ser informado pelo tutor)
     medicamento_continuo: str = Field(..., min_length=2, max_length=500)
     aspecto_urina_fezes: str = Field(..., min_length=2, max_length=300)
@@ -325,6 +357,7 @@ class FormularioOut(_Orm):
     vacinacao_em_dia: bool
     vermifugo_em_dia: bool
     convivio_outros_animais: bool
+    manejo_preventivo: Optional[str] = None
     medicamento_continuo: str
     aspecto_urina_fezes: str
     alteracao_peso_apetite: str
@@ -344,6 +377,9 @@ class PacienteOut(_Orm):
     raca: str
     sexo: str
     idade_texto: str
+    peso_kg: Optional[float] = None
+    porte: Optional[str] = None
+    status_reprodutivo: Optional[str] = None
 
 
 class TutorOut(_Orm):

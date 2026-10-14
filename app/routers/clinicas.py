@@ -4,15 +4,31 @@ app/routers/clinicas.py — Dados da própria clínica (escopo do token — RN-0
 Não há mais CRUD aberto por id: a clínica é SEMPRE a do usuário autenticado.
 """
 
-from fastapi import APIRouter, Depends, status
-from sqlalchemy import select
+import re
+
+from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.exceptions import ConflitoDeNegocio
-from app.models import Clinica, MedicoVeterinario, Sintoma
-from app.schemas import ClinicaResumoOut, MedicoCreate, MedicoOut, SintomaOut
-from app.security import PAPEL_GESTOR, UsuarioAtual, exigir_papeis, usuario_atual
+from app.models import Clinica, MedicoVeterinario, Sintoma, Tutor
+from app.schemas import (
+    ClinicaResumoOut,
+    MedicoCreate,
+    MedicoOut,
+    PetResumoOut,
+    SintomaOut,
+    TutorComPetsOut,
+)
+from app.security import (
+    PAPEL_GESTOR,
+    PAPEL_RECEPCAO,
+    UsuarioAtual,
+    exigir_papeis,
+    usuario_atual,
+)
 
 router = APIRouter(prefix="/clinicas", tags=["Clínica"])
 
@@ -66,3 +82,34 @@ async def listar_sintomas(
         .order_by(Sintoma.alerta_urgencia.desc(), Sintoma.categoria, Sintoma.nome_sintoma)
     )
     return res.scalars().all()
+
+
+@router.get("/me/tutores", response_model=list[TutorComPetsOut],
+            summary="Buscar tutores e pets da clínica (agendamento rápido)")
+async def buscar_tutores(
+    q: str = Query("", max_length=60, description="Parte do nome ou do telefone."),
+    user: UsuarioAtual = Depends(exigir_papeis(PAPEL_RECEPCAO, PAPEL_GESTOR)),
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = (
+        select(Tutor)
+        .options(selectinload(Tutor.pets))
+        .where(Tutor.id_clinica == user.id_clinica)  # RN-004
+        .order_by(Tutor.nome)
+        .limit(15)
+    )
+    termo = q.strip()
+    if termo:
+        digitos = re.sub(r"\D", "", termo)
+        filtros = [Tutor.nome.ilike(f"%{termo}%")]
+        if digitos:
+            filtros.append(Tutor.telefone.like(f"%{digitos}%"))
+        stmt = stmt.where(or_(*filtros))
+    tutores = (await db.execute(stmt)).scalars().all()
+    return [
+        TutorComPetsOut(
+            nome=t.nome, telefone=t.telefone,
+            pets=[PetResumoOut.model_validate(p) for p in t.pets],
+        )
+        for t in tutores
+    ]

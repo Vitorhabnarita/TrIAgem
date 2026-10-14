@@ -49,13 +49,14 @@ app = FastAPI(
     openapi_url=None if _producao else "/openapi.json",
 )
 
-# CORS restrito às origens configuradas (nunca "*" com credenciais)
+# CORS: origens SEMPRE explícitas (Vite: http://localhost:5173 e http://127.0.0.1:5173 por padrão;
+# em produção, defina CORS_ORIGINS). Métodos/headers liberados (inclui Authorization).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
     allow_credentials=False,   # autenticação por Bearer token, não por cookie
-    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Admin-Key"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

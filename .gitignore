@@ -39,3 +39,16 @@ htmlcov/
 
 .demo_credentials.txt
 
+
+# Frontend (React + Vite)
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+.vite/
+frontend/.vite/
+frontend/.env.local
+frontend/*.local
+*.tsbuildinfo
+npm-debug.log*
+logs/

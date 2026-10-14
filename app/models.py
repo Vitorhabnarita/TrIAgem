@@ -5,6 +5,7 @@ chaves estrangeiras aninhadas (clinica → medico/tutor → pet → consulta).
 """
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, List, Optional
 
 from sqlalchemy import (
@@ -13,6 +14,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -183,6 +185,10 @@ class Pet(Base):
     raca: Mapped[str] = mapped_column(String(100), nullable=False)
     sexo: Mapped[str] = mapped_column(String(15), nullable=False)      # Macho / Fêmea / Não informado
     idade_texto: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Dados clínicos veterinários (opcionais — migração 003)
+    peso_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2), nullable=True)
+    porte: Mapped[Optional[str]] = mapped_column(String(15), nullable=True)               # Mini/Pequeno/Médio/Grande/Gigante
+    status_reprodutivo: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # Castrado / Inteiro
 
     # Relacionamentos
     tutor: Mapped["Tutor"] = relationship("Tutor", back_populates="pets")
@@ -304,6 +310,9 @@ class FormularioTriagem(Base):
     vacinacao_em_dia: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     vermifugo_em_dia: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     convivio_outros_animais: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Detalhes veterinários (opcional — migração 003): vacinas (V8/V10, V4/V5, antirrábica),
+    # vermifugação, ectoparasitas, acesso à rua e contactantes
+    manejo_preventivo: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     # RN-002: resposta explícita obrigatória (sem default — "Nenhum" deve ser escolhido pelo tutor)
     medicamento_continuo: Mapped[str] = mapped_column(String(500), nullable=False)
     aspecto_urina_fezes: Mapped[str] = mapped_column(String(300), nullable=False)

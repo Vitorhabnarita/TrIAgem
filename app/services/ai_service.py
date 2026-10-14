@@ -45,11 +45,16 @@ o paciente entrar na sala.
 prognóstico, nome de doença, conclusão clínica ou prescrição/dose/conduta terapêutica. Não escreva \
 "compatível com", "sugestivo de", "suspeita de", "provavelmente é", "se trata de".
 2. Traduza apenas SINAIS: "vomitou espuma amarela" → "êmese com conteúdo bilioso"; \
-"respira rápido" → "taquipneia"; "não quer comer" → "hiporexia/anorexia". Termos descritivos de sinais \
-clínicos são permitidos; nomes de doenças NÃO.
+"respira rápido" → "taquipneia"; "não quer comer" → "hiporexia/anorexia"; "faz força na caixa de areia e \
+não sai xixi" → "estrangúria/disúria com possível anúria (a confirmar no exame físico)"; "bebe água o \
+tempo todo" → "polidipsia"; "tenta vomitar e nada sai, barriga inchada" → "êmese improdutiva (ânsia) com \
+distensão abdominal". Termos descritivos de sinais clínicos são permitidos; nomes de doenças NÃO.
 3. Bloqueio de viés de ancoragem: o roteiro de orientação NÃO pode induzir o médico a pular ou abreviar o \
 exame físico. Entregue um Roteiro de Orientação Pré-Consulta: quais parâmetros vitais e sistemas \
-inspecionar presencialmente. Não proponha exames complementares como conduta nem tratamentos.
+inspecionar presencialmente (ex.: coloração de mucosas, TPC, frequências cardíaca e respiratória, \
+temperatura retal, hidratação, auscultação cardiopulmonar, palpação abdominal/vesical, escore de condição \
+corporal), ajustados à espécie (cão/gato) e aos sinais relatados. Não proponha exames complementares como \
+conduta nem tratamentos.
 4. O campo alerta_seguranca_tutor usa linguagem simples e acolhedora, orienta a NÃO medicar por conta \
 própria, informa o nível de urgência e NÃO cita nomes de doenças.
 5. Nunca invente informação ausente. Se algo não foi informado, escreva "não informado". Não extrapole.
@@ -110,6 +115,11 @@ class DadosTriagem:
     relato_livre_tutor: str
     sintomas_marcados: list[str]
     sintomas_urgencia: list[str] = field(default_factory=list)
+    # Dados clínicos opcionais do paciente (ajudam a ajustar o roteiro de exame físico)
+    peso_kg: float | None = None
+    porte: str | None = None
+    status_reprodutivo: str | None = None
+    manejo_preventivo: str = ""
 
     @property
     def urgencia_deterministica(self) -> bool:
@@ -189,6 +199,9 @@ def montar_prompt_usuario(d: DadosTriagem, suspeita_injecao: bool) -> str:
     estruturado = {
         "paciente": {
             "especie": d.especie, "raca": d.raca, "sexo": d.sexo, "idade": d.idade_texto,
+            **({"peso_kg": d.peso_kg} if d.peso_kg is not None else {}),
+            **({"porte": d.porte} if d.porte else {}),
+            **({"status_reprodutivo": d.status_reprodutivo} if d.status_reprodutivo else {}),
         },
         "estilo_de_vida": {
             "ambiente": d.ambiente,
@@ -196,6 +209,7 @@ def montar_prompt_usuario(d: DadosTriagem, suspeita_injecao: bool) -> str:
             "vacinacao_em_dia": d.vacinacao_em_dia,
             "vermifugo_em_dia": d.vermifugo_em_dia,
             "convivio_com_outros_animais": d.convivio_outros_animais,
+            **({"manejo_preventivo_detalhado": d.manejo_preventivo} if d.manejo_preventivo else {}),
         },
         "bioindicadores_e_medicacao": {
             "medicamentos_continuos_ou_recentes": d.medicamento_continuo,
@@ -298,6 +312,8 @@ def preparar_dados(d: DadosTriagem) -> tuple[DadosTriagem, bool]:
         alteracao_peso_apetite=limpa(d.alteracao_peso_apetite), ingestao_hidrica=limpa(d.ingestao_hidrica),
         tempo_evolucao=limpa(d.tempo_evolucao, 120), relato_livre_tutor=relato,
         sintomas_marcados=d.sintomas_marcados, sintomas_urgencia=d.sintomas_urgencia,
+        peso_kg=d.peso_kg, porte=d.porte, status_reprodutivo=d.status_reprodutivo,
+        manejo_preventivo=limpa(d.manejo_preventivo or "", 520),
     )
     return limpos, suspeita
 
