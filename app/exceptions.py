@@ -24,13 +24,13 @@ class TriagemBaseException(Exception):
 
 
 class RecursoNaoEncontrado(TriagemBaseException):
-    """Recurso solicitado não existe no banco."""
+    """Recurso inexistente OU pertencente a outra clínica (RN-004: não vaza existência)."""
     status_code = status.HTTP_404_NOT_FOUND
     detail = "Recurso não encontrado."
 
 
 class ConflitoDeNegocio(TriagemBaseException):
-    """Violação de regra de negócio (ex: duplicata, estado inválido)."""
+    """Violação de regra de negócio (ex: duplicata)."""
     status_code = status.HTTP_409_CONFLICT
     detail = "Conflito de negócio."
 
@@ -42,9 +42,21 @@ class EstadoInvalido(TriagemBaseException):
 
 
 class TermoNaoAceito(TriagemBaseException):
-    """Tutor não aceitou o termo de segurança antes de submeter triagem."""
+    """Tutor não aceitou o termo de consentimento antes de submeter a Triagem Pré-Consulta."""
     status_code = status.HTTP_403_FORBIDDEN
-    detail = "O tutor precisa aceitar o termo de segurança antes de submeter a triagem."
+    detail = "O tutor precisa aceitar o termo de consentimento antes de enviar a Triagem Pré-Consulta."
+
+
+class LinkExpirado(TriagemBaseException):
+    """Link único da Triagem Pré-Consulta expirado."""
+    status_code = status.HTTP_410_GONE
+    detail = "Este link da Triagem Pré-Consulta expirou. Solicite um novo link à clínica."
+
+
+class LimiteExcedido(TriagemBaseException):
+    """Rate limit das rotas públicas."""
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    detail = "Muitas requisições. Aguarde um instante e tente novamente."
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +70,9 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def triagem_exception_handler(
         request: Request, exc: TriagemBaseException
     ) -> JSONResponse:
+        headers = {"Retry-After": "30"} if isinstance(exc, LimiteExcedido) else None
         return JSONResponse(
             status_code=exc.status_code,
             content={"detail": exc.detail},
+            headers=headers,
         )

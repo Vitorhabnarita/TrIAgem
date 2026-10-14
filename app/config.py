@@ -3,6 +3,7 @@ config.py — Configurações da aplicação via Pydantic Settings.
 Lê variáveis de ambiente ou do arquivo .env na raiz do projeto.
 """
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,15 +23,49 @@ class Settings(BaseSettings):
     # Aplicação
     # -----------------------------------------------------------------------
     app_name: str = "TrIAgem API"
-    app_version: str = "0.1.0"
+    app_version: str = "0.2.0"
     debug: bool = False
+    ambiente: str = "desenvolvimento"           # 'producao' desativa /docs e /redoc
+    timezone_clinica: str = "America/Sao_Paulo"  # 'hoje' da fila e agrupamento diário do ROI
+
+    # Origens permitidas no CORS (separadas por vírgula). Nunca use "*" em produção.
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
+    # URL pública do frontend — usada para montar o link único do WhatsApp
+    frontend_base_url: str = "http://localhost:5173"
+
+    # -----------------------------------------------------------------------
+    # Segurança (RN-004)
+    # -----------------------------------------------------------------------
+    jwt_secret: str = Field(default="", repr=False)
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 480           # 8h — um turno de trabalho
+    admin_api_key: str = Field(default="", repr=False)   # protege /admin/*
+    token_triagem_validade_horas: int = 72  # validade do link do WhatsApp
+
+    # -----------------------------------------------------------------------
+    # Google Gemini (Triagem Pré-Consulta)
+    # -----------------------------------------------------------------------
+    gemini_api_key: str = Field(default="", repr=False)
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_fallback_model: str = "gemini-2.5-flash"
+    gemini_timeout_segundos: int = 45
+
+    # -----------------------------------------------------------------------
+    # ROI (RN-003)
+    # -----------------------------------------------------------------------
+    roi_benchmark_minutos: int = 30
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",             # variáveis desconhecidas no .env não derrubam a API
     )
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
 
 settings = Settings()
-

@@ -5,17 +5,19 @@ chaves estrangeiras aninhadas (clinica → medico/tutor → pet → consulta).
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -45,6 +47,10 @@ class Clinica(Base):
     nome_fantasia: Mapped[str] = mapped_column(String(255), nullable=False)
     cnpj: Mapped[str] = mapped_column(String(18), nullable=False, unique=True)
     ativa: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # 'veterinaria' | 'humana' — o frontend usa para trocar rótulos (White-Label)
+    segmento: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="veterinaria", server_default="veterinaria"
+    )
 
     # Relacionamentos
     medicos: Mapped[List["MedicoVeterinario"]] = relationship(
@@ -56,6 +62,35 @@ class Clinica(Base):
 
     def __repr__(self) -> str:
         return f"<Clinica id={self.id_clinica} nome='{self.nome_fantasia}'>"
+
+
+# ---------------------------------------------------------------------------
+# 1b. Usuario — identidade de login (escopada por clínica — RN-004)
+# ---------------------------------------------------------------------------
+
+class Usuario(Base):
+    """
+    Usuário de uma clínica (recepção, médico ou gestor).
+    O id_clinica do token JWT vem daqui e escopa TODAS as queries.
+    """
+
+    __tablename__ = "usuario"
+
+    id_usuario: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id_clinica: Mapped[int] = mapped_column(
+        Integer, ForeignKey("clinica.id_clinica", ondelete="CASCADE"), nullable=False, index=True
+    )
+    id_medico: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("medico_veterinario.id_medico", ondelete="SET NULL"), nullable=True
+    )
+    nome: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    senha_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    papel: Mapped[str] = mapped_column(String(20), nullable=False)  # recepcao | medico | gestor
+    ativo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+
+    def __repr__(self) -> str:
+        return f"<Usuario id={self.id_usuario} papel='{self.papel}'>"
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +146,9 @@ class Tutor(Base):
     telefone: Mapped[str] = mapped_column(String(20), nullable=False)
     aceitou_termo_seguranca: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
+    )
+    termo_aceito_em: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     # Relacionamentos
@@ -169,7 +207,16 @@ class Consulta(Base):
 
     __tablename__ = "consulta"
 
+    __table_args__ = (
+        Index("ix_consulta_clinica_status", "id_clinica", "status"),
+        Index("ix_consulta_clinica_agendada", "id_clinica", "agendada_para"),
+    )
+
     id_consulta: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Tenant direto (RN-004): evita 3 joins e torna o escopo à prova de esquecimento
+    id_clinica: Mapped[int] = mapped_column(
+        Integer, ForeignKey("clinica.id_clinica", ondelete="CASCADE"), nullable=False
+    )
     id_pet: Mapped[int] = mapped_column(
         Integer, ForeignKey("pet.id_pet", ondelete="RESTRICT"), nullable=False
     )
@@ -178,7 +225,14 @@ class Consulta(Base):
     )
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="agendada"
-    )  # agendada | em_andamento | finalizada
+    )  # agendada | em_andamento | finalizada | cancelada
+    agendada_para: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    criada_em: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # Link único do WhatsApp (256 bits) — o tutor nunca vê IDs internos
+    token_triagem: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    token_expira_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     inicio_consulta: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     fim_consulta: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -208,6 +262,12 @@ class Sintoma(Base):
     id_sintoma: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     nome_sintoma: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     alerta_urgencia: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    categoria: Mapped[str] = mapped_column(
+        String(60), nullable=False, default="Geral", server_default="Geral"
+    )
+    ativo: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
 
     # Relacionamentos N:N
     formularios: Mapped[List["FormularioTriagem"]] = relationship(
@@ -244,11 +304,23 @@ class FormularioTriagem(Base):
     vacinacao_em_dia: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     vermifugo_em_dia: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     convivio_outros_animais: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    medicamento_continuo: Mapped[str] = mapped_column(String(500), nullable=False, default="Nenhum")
+    # RN-002: resposta explícita obrigatória (sem default — "Nenhum" deve ser escolhido pelo tutor)
+    medicamento_continuo: Mapped[str] = mapped_column(String(500), nullable=False)
     aspecto_urina_fezes: Mapped[str] = mapped_column(String(300), nullable=False)
     alteracao_peso_apetite: Mapped[str] = mapped_column(String(300), nullable=False)
+    ingestao_hidrica: Mapped[str] = mapped_column(
+        String(300), nullable=False, default="Não informado", server_default="Não informado"
+    )
     tempo_evolucao: Mapped[str] = mapped_column(String(100), nullable=False)    # ex: 2 dias, 1 semana
     relato_livre_tutor: Mapped[str] = mapped_column(Text, nullable=False)
+    # RN-001 (gatilho determinístico): algum sintoma do checklist tem alerta_urgencia
+    urgencia_deterministica: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # pendente | concluida | falhou — a falha da IA nunca bloqueia o fluxo do tutor
+    status_ia: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pendente", server_default="pendente"
+    )
     submetido_em: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -312,8 +384,40 @@ class RelatorioIA(Base):
         unique=True,  # 1:1 com formulario
     )
     resumo_estruturado: Mapped[str] = mapped_column(Text, nullable=False)
-    pontos_investigacao: Mapped[str] = mapped_column(Text, nullable=False)
+    # Lista de perguntas/parâmetros a inspecionar presencialmente (JSONB: list[str])
+    pontos_investigacao: Mapped[Any] = mapped_column(JSONB, nullable=False)
     flag_urgencia_detectada: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # --- Contrato rico (Briefing Estruturado de Triagem) ---
+    nivel_prioridade: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="NAO_URGENTE", server_default="NAO_URGENTE"
+    )  # EMERGENCIA | MUITO_URGENTE | URGENTE | POUCO_URGENTE | NAO_URGENTE
+    cor_prioridade: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="AZUL", server_default="AZUL"
+    )  # VERMELHO | LARANJA | AMARELO | VERDE | AZUL
+    traducao_semiologica: Mapped[Any] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )  # list[{relato_leigo, termo_tecnico_descritivo}]
+    cronologia_evolucao: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    alerta_medicacao_e_bioindicadores: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    sinais_alerta_identificados: Mapped[Any] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    orientacao_preparatoria_consultorio: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    alerta_seguranca_tutor: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    aviso_governanca_etica: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    # Rastreabilidade: qual modelo gerou o briefing e se houve fallback/guardrail
+    modelo_utilizado: Mapped[str] = mapped_column(
+        String(80), nullable=False, default="", server_default=""
+    )
     processado_em: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

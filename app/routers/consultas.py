@@ -1,291 +1,371 @@
 """
-app/routers/consultas.py — Motor de consultas e medição de tempo.
+app/routers/consultas.py — Agenda, fila da recepção e cronômetro de consulta (RN-003).
 
-Este router é o coração do argumento de marketing do TrIAgem:
-cada consulta tem timestamps de início e fim que provam a economia
-de tempo gerada pelo sistema de triagem digital.
-
-Fluxo de estado:
-  agendada → [iniciar] → em_andamento → [finalizar] → finalizada
-                                      ↘ [cancelar]  → cancelada
+Todas as queries são escopadas por id_clinica do token (RN-004).
+Máquina de estados:  agendada → em_andamento → finalizada
+                     agendada|em_andamento → cancelada
+Timestamps: sempre UTC (dependencies.agora_utc), com SELECT ... FOR UPDATE nas transições
+para evitar corrida por duplo clique.
 """
 
-from datetime import datetime, timezone
-from typing import Any
+from datetime import date, datetime, time, timedelta
+from typing import Literal, Optional
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased
 
+from app.config import settings
 from app.database import get_db
-from app.dependencies import get_or_404
-from app.exceptions import ConflitoDeNegocio, EstadoInvalido
-from app.models import Clinica, Consulta, MedicoVeterinario, Pet, Tutor
-from app.schemas import (
-    ConsultaCreate,
-    ConsultaDetalhadaOut,
-    ConsultaOut,
+from app.dependencies import agora_utc, carregar_consulta, garantir_utc
+from app.exceptions import ConflitoDeNegocio, EstadoInvalido, RecursoNaoEncontrado
+from app.models import (
+    Clinica,
+    Consulta,
+    FormularioTriagem,
+    MedicoVeterinario,
+    Pet,
+    RelatorioIA,
+    Tutor,
 )
+from app.schemas import (
+    ConsultaAgendar,
+    ConsultaFilaItem,
+    ConsultaFinalizadaOut,
+    ConsultaStatusOut,
+    MedicoMini,
+)
+from app.security import (
+    PAPEL_GESTOR,
+    PAPEL_MEDICO,
+    PAPEL_RECEPCAO,
+    UsuarioAtual,
+    exigir_papeis,
+    gerar_token_triagem,
+    usuario_atual,
+)
+from app.services import links
+from app.services.roi import duracao_minutos, minutos_economizados
 
 router = APIRouter(prefix="/consultas", tags=["Consultas"])
 
+STATUS_VALIDOS = {"agendada", "em_andamento", "finalizada", "cancelada"}
+
 
 # ---------------------------------------------------------------------------
-# Helpers internos
+# Helpers
 # ---------------------------------------------------------------------------
 
-def _agora_utc() -> datetime:
-    """Retorna datetime atual em UTC com timezone info."""
-    return datetime.now(timezone.utc)
+def _janela_do_dia(dia: date) -> tuple[datetime, datetime]:
+    tz = ZoneInfo(settings.timezone_clinica)
+    ini = datetime.combine(dia, time.min, tzinfo=tz)
+    return ini, ini + timedelta(days=1)
 
 
-async def _buscar_consulta_detalhada(
-    id_consulta: int, db: AsyncSession
-) -> Consulta:
-    """
-    Busca consulta com eager loading de pet, médico e formulário.
-    Evita N+1 queries nas respostas detalhadas.
-    """
-    result = await db.execute(
-        select(Consulta)
-        .options(
-            selectinload(Consulta.pet),
-            selectinload(Consulta.medico),
-            selectinload(Consulta.formulario),
-        )
-        .where(Consulta.id_consulta == id_consulta)
+def _montar_item(c: Consulta, pet: Pet, tutor: Tutor, medico: MedicoVeterinario,
+                 form: Optional[FormularioTriagem], rel: Optional[RelatorioIA],
+                 clinica_nome: str) -> ConsultaFilaItem:
+    # RN-001: determinístico OU semântico (IA)
+    urgencia = bool(form and (form.urgencia_deterministica or (rel and rel.flag_urgencia_detectada)))
+    if form is None:
+        st = "pendente"
+    elif urgencia:
+        st = "urgencia"
+    else:
+        st = "preenchido"
+
+    nivel = rel.nivel_prioridade if rel else ("EMERGENCIA" if urgencia else None)
+    cor = rel.cor_prioridade if rel else ("VERMELHO" if urgencia else None)
+
+    dur = eco = None
+    if c.inicio_consulta and c.fim_consulta:
+        try:
+            dur = duracao_minutos(c.inicio_consulta, c.fim_consulta)
+            eco = minutos_economizados(dur, settings.roi_benchmark_minutos, form is not None)
+        except ValueError:
+            pass
+
+    return ConsultaFilaItem(
+        id_consulta=c.id_consulta,
+        status=c.status,
+        agendada_para=c.agendada_para,
+        pet_nome=pet.nome,
+        especie=pet.especie,
+        tutor_nome=tutor.nome,
+        tutor_telefone=tutor.telefone,
+        medico=MedicoMini(id_medico=medico.id_medico, nome=medico.nome),
+        status_triagem=st,
+        urgencia=urgencia,
+        nivel_prioridade=nivel,
+        cor_prioridade=cor,
+        status_ia=form.status_ia if form else None,
+        link_triagem=links.link_triagem(c.token_triagem),
+        whatsapp_url=links.whatsapp_url(
+            token=c.token_triagem, tutor_nome=tutor.nome, telefone=tutor.telefone,
+            pet_nome=pet.nome, clinica_nome=clinica_nome,
+        ),
+        inicio_consulta=c.inicio_consulta,
+        fim_consulta=c.fim_consulta,
+        duracao_minutos=dur,
+        minutos_economizados=eco,
     )
-    consulta = result.scalar_one_or_none()
-    if consulta is None:
-        from app.exceptions import RecursoNaoEncontrado
+
+
+async def _item_por_id(db: AsyncSession, id_consulta: int, user: UsuarioAtual) -> ConsultaFilaItem:
+    itens = await _consultar_fila(db, user, id_consulta=id_consulta)
+    if not itens:
         raise RecursoNaoEncontrado(f"Consulta {id_consulta} não encontrada.")
-    return consulta
+    return itens[0]
 
 
-# ===========================================================================
-# ENDPOINTS
-# ===========================================================================
+async def _consultar_fila(
+    db: AsyncSession,
+    user: UsuarioAtual,
+    *,
+    dia: Optional[date] = None,
+    id_medico: Optional[int] = None,
+    status_filtro: Optional[str] = None,
+    id_consulta: Optional[int] = None,
+) -> list[ConsultaFilaItem]:
+    stmt = (
+        select(Consulta, Pet, Tutor, MedicoVeterinario, FormularioTriagem, RelatorioIA, Clinica.nome_fantasia)
+        .join(Pet, Pet.id_pet == Consulta.id_pet)
+        .join(Tutor, Tutor.id_tutor == Pet.id_tutor)
+        .join(MedicoVeterinario, MedicoVeterinario.id_medico == Consulta.id_medico)
+        .join(Clinica, Clinica.id_clinica == Consulta.id_clinica)
+        .outerjoin(FormularioTriagem, FormularioTriagem.id_consulta == Consulta.id_consulta)
+        .outerjoin(RelatorioIA, RelatorioIA.id_formulario == FormularioTriagem.id_formulario)
+        .where(Consulta.id_clinica == user.id_clinica)  # RN-004
+    )
+    if user.papel == PAPEL_MEDICO:
+        stmt = stmt.where(Consulta.id_medico == user.id_medico)
+    elif id_medico:
+        stmt = stmt.where(Consulta.id_medico == id_medico)
+    if id_consulta:
+        stmt = stmt.where(Consulta.id_consulta == id_consulta)
+    if status_filtro:
+        stmt = stmt.where(Consulta.status == status_filtro)
+    if dia:
+        ini, fim = _janela_do_dia(dia)
+        ref = func.coalesce(Consulta.agendada_para, Consulta.criada_em)
+        stmt = stmt.where(ref >= ini, ref < fim)
+    stmt = stmt.order_by(func.coalesce(Consulta.agendada_para, Consulta.criada_em))
+
+    linhas = (await db.execute(stmt)).all()
+    itens = [_montar_item(c, p, t, m, f, r, nome) for c, p, t, m, f, r, nome in linhas]
+    # Urgências primeiro (fila do topo), depois em andamento, depois por horário
+    ordem = {"em_andamento": 0, "agendada": 1, "finalizada": 2, "cancelada": 3}
+    itens.sort(key=lambda i: (not (i.urgencia and i.status in ("agendada", "em_andamento")),
+                              ordem.get(i.status, 9)))
+    return itens
+
+
+# ---------------------------------------------------------------------------
+# Agenda / fila
+# ---------------------------------------------------------------------------
 
 @router.post(
     "",
-    response_model=ConsultaOut,
+    response_model=ConsultaFilaItem,
     status_code=status.HTTP_201_CREATED,
-    summary="Agendar nova consulta",
+    summary="Agendar consulta e gerar link da Triagem Pré-Consulta",
 )
 async def agendar_consulta(
-    payload: ConsultaCreate,
+    payload: ConsultaAgendar,
+    user: UsuarioAtual = Depends(exigir_papeis(PAPEL_RECEPCAO, PAPEL_GESTOR)),
     db: AsyncSession = Depends(get_db),
-) -> ConsultaOut:
+) -> ConsultaFilaItem:
     """
-    Agenda uma consulta vinculando um pet a um médico.
-
-    Validações:
-    - Pet deve existir
-    - Médico deve existir e pertencer à mesma clínica do tutor do pet
-    - Não permite consultas duplicadas em aberto para o mesmo pet
+    Agendamento rápido: reaproveita o tutor (por telefone) e o pet (por nome) dentro da MESMA clínica
+    ou cria novos; gera o token único (256 bits) do link do WhatsApp.
     """
-    # Carrega pet com tutor para cruzar clínica
-    pet = await get_or_404(Pet, payload.id_pet, db)
-    await db.refresh(pet, ["tutor"])
-    medico = await get_or_404(MedicoVeterinario, payload.id_medico, db)
+    medico = await db.get(MedicoVeterinario, payload.id_medico)
+    if medico is None or medico.id_clinica != user.id_clinica:   # RN-004
+        raise RecursoNaoEncontrado("Médico veterinário não encontrado nesta clínica.")
 
-    # Isolamento de tenant: pet e médico devem ser da mesma clínica
-    if pet.tutor.id_clinica != medico.id_clinica:
-        raise EstadoInvalido(
-            "O pet e o médico pertencem a clínicas diferentes. "
-            "Não é possível criar a consulta."
-        )
-
-    # Bloqueia consultas abertas duplicadas para o mesmo pet
-    consulta_aberta = await db.scalar(
-        select(Consulta).where(
-            Consulta.id_pet == payload.id_pet,
-            Consulta.status.in_(["agendada", "em_andamento"]),
+    tutor = await db.scalar(
+        select(Tutor).where(
+            Tutor.id_clinica == user.id_clinica, Tutor.telefone == payload.tutor.telefone
         )
     )
-    if consulta_aberta:
+    if tutor is None:
+        tutor = Tutor(id_clinica=user.id_clinica, nome=payload.tutor.nome.strip(),
+                      telefone=payload.tutor.telefone, aceitou_termo_seguranca=False)
+        db.add(tutor)
+        await db.flush()
+
+    pet = await db.scalar(
+        select(Pet).where(Pet.id_tutor == tutor.id_tutor,
+                          func.lower(Pet.nome) == payload.pet.nome.strip().lower())
+    )
+    if pet is None:
+        pet = Pet(id_tutor=tutor.id_tutor, **payload.pet.model_dump())
+        pet.nome = pet.nome.strip()
+        db.add(pet)
+        await db.flush()
+
+    aberta = await db.scalar(
+        select(Consulta).where(
+            Consulta.id_pet == pet.id_pet, Consulta.status.in_(["agendada", "em_andamento"])
+        )
+    )
+    if aberta:
         raise ConflitoDeNegocio(
-            f"O pet já possui uma consulta em aberto (id={consulta_aberta.id_consulta}, "
-            f"status='{consulta_aberta.status}'). Finalize-a antes de criar uma nova."
+            f"{pet.nome} já possui uma consulta em aberto (#{aberta.id_consulta}, status "
+            f"'{aberta.status}'). Finalize ou cancele antes de agendar outra."
         )
 
+    agora = agora_utc()
     consulta = Consulta(
-        id_pet=payload.id_pet,
-        id_medico=payload.id_medico,
+        id_clinica=user.id_clinica,
+        id_pet=pet.id_pet,
+        id_medico=medico.id_medico,
         status="agendada",
+        agendada_para=garantir_utc(payload.agendada_para) if payload.agendada_para else agora,
+        token_triagem=gerar_token_triagem(),
+        token_expira_em=agora + timedelta(hours=settings.token_triagem_validade_horas),
     )
     db.add(consulta)
     await db.flush()
-    await db.refresh(consulta)
-    return consulta  # type: ignore[return-value]
+    return await _item_por_id(db, consulta.id_consulta, user)
 
 
-@router.get(
-    "/{id_consulta}",
-    response_model=ConsultaDetalhadaOut,
-    summary="Buscar consulta detalhada",
-)
-async def buscar_consulta(
-    id_consulta: int,
+@router.get("/fila", response_model=list[ConsultaFilaItem],
+            summary="Fila do dia (recepção, médico ou gestor)")
+async def fila(
+    data: Optional[date] = Query(None, description="Dia (fuso da clínica). Padrão: hoje."),
+    id_medico: Optional[int] = Query(None, gt=0),
+    status_consulta: Optional[Literal["agendada", "em_andamento", "finalizada", "cancelada"]] = Query(
+        None, alias="status"
+    ),
+    user: UsuarioAtual = Depends(usuario_atual),
     db: AsyncSession = Depends(get_db),
-) -> ConsultaDetalhadaOut:
-    """Retorna consulta com pet, médico, formulário e relatório (se existirem)."""
-    return await _buscar_consulta_detalhada(id_consulta, db)  # type: ignore[return-value]
+) -> list[ConsultaFilaItem]:
+    dia = data or datetime.now(ZoneInfo(settings.timezone_clinica)).date()
+    return await _consultar_fila(db, user, dia=dia, id_medico=id_medico, status_filtro=status_consulta)
 
 
-@router.patch(
-    "/{id_consulta}/iniciar",
-    response_model=ConsultaOut,
-    summary="Iniciar consulta — grava timestamp de início",
-)
+@router.get("/{id_consulta}", response_model=ConsultaFilaItem, summary="Resumo de uma consulta")
+async def buscar_consulta(
+    id_consulta: int, user: UsuarioAtual = Depends(usuario_atual), db: AsyncSession = Depends(get_db)
+) -> ConsultaFilaItem:
+    return await _item_por_id(db, id_consulta, user)
+
+
+# ---------------------------------------------------------------------------
+# Cronômetro (RN-003)
+# ---------------------------------------------------------------------------
+
+@router.patch("/{id_consulta}/iniciar", response_model=ConsultaStatusOut,
+              summary="Iniciar consulta — grava inicio_consulta em UTC")
 async def iniciar_consulta(
     id_consulta: int,
+    user: UsuarioAtual = Depends(exigir_papeis(PAPEL_MEDICO, PAPEL_GESTOR)),
     db: AsyncSession = Depends(get_db),
-) -> ConsultaOut:
-    """
-    Marca o início da consulta com timestamp UTC.
+) -> Consulta:
+    consulta = await carregar_consulta(db, id_consulta, user, bloquear=True, apenas_proprias=True)
 
-    Regras de estado:
-    - Só pode iniciar uma consulta com status 'agendada'
-    - 'em_andamento': já foi iniciada → erro claro
-    - 'finalizada'/'cancelada': fluxo encerrado → erro claro
-
-    O timestamp gravado aqui é a âncora do cálculo de tempo economizado.
-    """
-    consulta = await get_or_404(Consulta, id_consulta, db)
-
-    match consulta.status:
-        case "em_andamento":
-            raise EstadoInvalido(
-                f"Consulta já foi iniciada em "
-                f"{consulta.inicio_consulta.strftime('%d/%m/%Y %H:%M:%S UTC')}."
-            )
-        case "finalizada":
-            raise EstadoInvalido(
-                "Consulta já foi finalizada. Não é possível reiniciá-la."
-            )
-        case "cancelada":
-            raise EstadoInvalido(
-                "Consulta cancelada não pode ser iniciada."
-            )
-        case "agendada":
-            pass  # Estado válido — prossegue
-        case _:
-            raise EstadoInvalido(f"Status desconhecido: '{consulta.status}'.")
+    if consulta.status == "em_andamento":
+        raise EstadoInvalido("A consulta já foi iniciada.")
+    if consulta.status == "finalizada":
+        raise EstadoInvalido("Consulta já finalizada. Não é possível reiniciá-la.")
+    if consulta.status == "cancelada":
+        raise EstadoInvalido("Consulta cancelada não pode ser iniciada.")
+    if consulta.status != "agendada":
+        raise EstadoInvalido(f"Status desconhecido: '{consulta.status}'.")
 
     consulta.status = "em_andamento"
-    consulta.inicio_consulta = _agora_utc()
-
+    consulta.inicio_consulta = agora_utc()
     await db.flush()
     await db.refresh(consulta)
-    return consulta  # type: ignore[return-value]
+    return consulta
 
 
-@router.patch(
-    "/{id_consulta}/finalizar",
-    response_model=dict,
-    summary="Finalizar consulta — grava timestamp de fim e calcula duração",
-)
+@router.patch("/{id_consulta}/finalizar", response_model=ConsultaFinalizadaOut,
+              summary="Finalizar consulta — grava fim_consulta em UTC e calcula o tempo economizado")
 async def finalizar_consulta(
     id_consulta: int,
+    user: UsuarioAtual = Depends(exigir_papeis(PAPEL_MEDICO, PAPEL_GESTOR)),
     db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """
-    Marca o fim da consulta e calcula o tempo total em minutos.
+) -> ConsultaFinalizadaOut:
+    consulta = await carregar_consulta(db, id_consulta, user, bloquear=True, apenas_proprias=True)
 
-    Regras de estado:
-    - Só pode finalizar consultas 'em_andamento'
-    - Retorna o tempo de duração — dado vital para o dashboard de ROI da clínica
+    if consulta.status == "agendada":
+        raise EstadoInvalido("A consulta ainda não foi iniciada. Inicie antes de finalizar.")
+    if consulta.status == "finalizada":
+        raise EstadoInvalido("A consulta já está finalizada.")
+    if consulta.status == "cancelada":
+        raise EstadoInvalido("Consulta cancelada não pode ser finalizada.")
+    if consulta.inicio_consulta is None:
+        raise EstadoInvalido("Consulta em andamento sem início registrado. Contate o suporte.")
 
-    O campo `duracao_minutos` alimenta diretamente o argumento de marketing
-    'economia de 15 min por consulta'.
-    """
-    consulta = await get_or_404(Consulta, id_consulta, db)
+    agora = agora_utc()
+    try:
+        duracao = duracao_minutos(consulta.inicio_consulta, agora)
+    except ValueError:
+        raise EstadoInvalido("Fim anterior ao início: relógio inconsistente. Tente novamente.") from None
 
-    match consulta.status:
-        case "agendada":
-            raise EstadoInvalido(
-                "Consulta ainda não foi iniciada. "
-                "Use PATCH /consultas/{id}/iniciar primeiro."
+    com_triagem = (
+        await db.scalar(
+            select(func.count(FormularioTriagem.id_formulario)).where(
+                FormularioTriagem.id_consulta == consulta.id_consulta
             )
-        case "finalizada":
-            raise EstadoInvalido("Consulta já está finalizada.")
-        case "cancelada":
-            raise EstadoInvalido("Consulta cancelada não pode ser finalizada.")
-        case "em_andamento":
-            pass  # Estado válido
-        case _:
-            raise EstadoInvalido(f"Status desconhecido: '{consulta.status}'.")
+        )
+    ) > 0
+    economia = minutos_economizados(duracao, settings.roi_benchmark_minutos, com_triagem)
 
-    agora = _agora_utc()
     consulta.status = "finalizada"
     consulta.fim_consulta = agora
-
-    # Cálculo de duração — núcleo da métrica de ROI
-    inicio = consulta.inicio_consulta
-    if inicio.tzinfo is None:
-        # Fallback: trata como UTC se veio sem timezone
-        from datetime import timezone as tz
-        inicio = inicio.replace(tzinfo=tz.utc)
-
-    duracao_segundos = (agora - inicio).total_seconds()
-    duracao_minutos = round(duracao_segundos / 60, 2)
-
     await db.flush()
     await db.refresh(consulta)
 
-    return {
-        "id_consulta": consulta.id_consulta,
-        "status": consulta.status,
-        "inicio_consulta": consulta.inicio_consulta,
-        "fim_consulta": consulta.fim_consulta,
-        "duracao_minutos": duracao_minutos,
-        "mensagem": (
-            f"Consulta finalizada. Duração: {duracao_minutos} minuto(s). "
-            "Dado registrado para o relatório de eficiência."
+    return ConsultaFinalizadaOut(
+        id_consulta=consulta.id_consulta,
+        status=consulta.status,
+        inicio_consulta=consulta.inicio_consulta,
+        fim_consulta=consulta.fim_consulta,
+        duracao_minutos=duracao,
+        benchmark_minutos=settings.roi_benchmark_minutos,
+        minutos_economizados=economia,
+        com_triagem=com_triagem,
+        mensagem=(
+            f"Consulta finalizada em {duracao:g} min. "
+            + (f"Economia estimada: {economia:g} min vs. benchmark de "
+               f"{settings.roi_benchmark_minutos} min." if com_triagem
+               else "Sem Triagem Pré-Consulta preenchida: não conta para o ROI.")
         ),
-    }
+    )
 
 
-@router.patch(
-    "/{id_consulta}/cancelar",
-    response_model=ConsultaOut,
-    summary="Cancelar consulta",
-)
+@router.patch("/{id_consulta}/cancelar", response_model=ConsultaStatusOut,
+              summary="Cancelar consulta")
 async def cancelar_consulta(
     id_consulta: int,
+    user: UsuarioAtual = Depends(exigir_papeis(PAPEL_RECEPCAO, PAPEL_GESTOR)),
     db: AsyncSession = Depends(get_db),
-) -> ConsultaOut:
-    """Cancela uma consulta agendada ou em andamento."""
-    consulta = await get_or_404(Consulta, id_consulta, db)
-
+) -> Consulta:
+    consulta = await carregar_consulta(db, id_consulta, user, bloquear=True)
     if consulta.status in ("finalizada", "cancelada"):
-        raise EstadoInvalido(
-            f"Consulta com status '{consulta.status}' não pode ser cancelada."
-        )
-
+        raise EstadoInvalido(f"Consulta com status '{consulta.status}' não pode ser cancelada.")
     consulta.status = "cancelada"
     await db.flush()
     await db.refresh(consulta)
-    return consulta  # type: ignore[return-value]
+    return consulta
 
 
-@router.get(
-    "/pet/{id_pet}",
-    response_model=list[ConsultaOut],
-    summary="Listar consultas de um pet",
-)
-async def listar_consultas_pet(
-    id_pet: int,
+@router.post("/{id_consulta}/novo-link", response_model=ConsultaFilaItem,
+             summary="Gerar novo link (invalida o anterior)")
+async def renovar_link(
+    id_consulta: int,
+    user: UsuarioAtual = Depends(exigir_papeis(PAPEL_RECEPCAO, PAPEL_GESTOR)),
     db: AsyncSession = Depends(get_db),
-) -> list[ConsultaOut]:
-    """Retorna todas as consultas de um pet, ordenadas da mais recente."""
-    await get_or_404(Pet, id_pet, db)
-
-    result = await db.execute(
-        select(Consulta)
-        .where(Consulta.id_pet == id_pet)
-        .order_by(Consulta.id_consulta.desc())
-    )
-    return result.scalars().all()  # type: ignore[return-value]
+) -> ConsultaFilaItem:
+    consulta = await carregar_consulta(db, id_consulta, user, bloquear=True)
+    if consulta.status in ("finalizada", "cancelada"):
+        raise EstadoInvalido("Não é possível renovar o link de uma consulta encerrada.")
+    consulta.token_triagem = gerar_token_triagem()
+    consulta.token_expira_em = agora_utc() + timedelta(hours=settings.token_triagem_validade_horas)
+    await db.flush()
+    return await _item_por_id(db, id_consulta, user)

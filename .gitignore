@@ -33,3 +33,9 @@ build/
 htmlcov/
 .pytest_cache/
 
+
+# Postgres local descartável para testes
+.pgtest/
+
+.demo_credentials.txt
+

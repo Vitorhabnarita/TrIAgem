@@ -1,52 +1,66 @@
 """
-app/dependencies.py — Dependências reutilizáveis para injeção via FastAPI.
+app/dependencies.py — Helpers reutilizáveis, com ESCOPO DE TENANT embutido (RN-004).
 
-Centraliza helpers de consulta ao banco, reduzindo boilerplate nos routers
-e garantindo respostas de erro consistentes.
+Toda busca de entidade de negócio passa por aqui com o id_clinica do token,
+de modo que um recurso de outra clínica é indistinguível de um inexistente (404).
 """
 
-from typing import TypeVar
+from datetime import datetime, timezone
+from typing import Optional
 
-from fastapi import Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.database import get_db
 from app.exceptions import RecursoNaoEncontrado
-from app.models import Base
-
-# Alias para tipagem genérica
-ModelType = TypeVar("ModelType", bound=Base)
+from app.models import Consulta, FormularioTriagem, Pet
+from app.security import PAPEL_MEDICO, UsuarioAtual
 
 
-# ---------------------------------------------------------------------------
-# get_or_404 — busca por PK e levanta 404 se não encontrar
-# ---------------------------------------------------------------------------
+def agora_utc() -> datetime:
+    """Único ponto de geração de timestamps do sistema (RN-003): sempre UTC com tzinfo."""
+    return datetime.now(timezone.utc)
 
-async def get_or_404(
-    model: type[ModelType],
-    pk: int,
-    session: AsyncSession,
-    detail: str | None = None,
-) -> ModelType:
+
+def garantir_utc(dt: datetime) -> datetime:
+    """Normaliza datetimes recebidos/lidos para UTC com timezone."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+async def carregar_consulta(
+    db: AsyncSession,
+    id_consulta: int,
+    user: UsuarioAtual,
+    *,
+    bloquear: bool = False,
+    detalhada: bool = False,
+    apenas_proprias: bool = False,
+) -> Consulta:
     """
-    Busca um registro por chave primária. Levanta RecursoNaoEncontrado (404)
-    se não existir.
-
-    Uso:
-        clinica = await get_or_404(Clinica, id_clinica, db)
+    Carrega a consulta SOMENTE se pertencer à clínica do usuário.
+    - bloquear: SELECT ... FOR UPDATE (evita corrida em iniciar/finalizar com duplo clique)
+    - detalhada: eager loading de pet→tutor, médico, formulário→sintomas, relatório
+    - apenas_proprias: médico só enxerga as próprias consultas
     """
-    result = await session.get(model, pk)
-    if result is None:
-        nome = model.__tablename__
-        raise RecursoNaoEncontrado(
-            detail=detail or f"{nome} com id={pk} não encontrado."
+    stmt = select(Consulta).where(
+        Consulta.id_consulta == id_consulta,
+        Consulta.id_clinica == user.id_clinica,
+    )
+    if apenas_proprias and user.papel == PAPEL_MEDICO:
+        stmt = stmt.where(Consulta.id_medico == user.id_medico)
+    if detalhada:
+        stmt = stmt.options(
+            selectinload(Consulta.pet).selectinload(Pet.tutor),
+            selectinload(Consulta.medico),
+            selectinload(Consulta.formulario).selectinload(FormularioTriagem.sintomas),
+            selectinload(Consulta.formulario).selectinload(FormularioTriagem.relatorio),
         )
-    return result  # type: ignore[return-value]
+    if bloquear:
+        stmt = stmt.with_for_update(of=Consulta)
 
-
-# ---------------------------------------------------------------------------
-# Re-exporta get_db para uso direto nos routers sem import extra
-# ---------------------------------------------------------------------------
-
-DBSession = Depends(get_db)
+    consulta: Optional[Consulta] = (await db.execute(stmt)).scalar_one_or_none()
+    if consulta is None:
+        raise RecursoNaoEncontrado(f"Consulta {id_consulta} não encontrada.")
+    return consulta
