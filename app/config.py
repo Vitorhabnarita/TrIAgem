@@ -59,6 +59,8 @@ class Settings(BaseSettings):
     # ROI (RN-003)
     # -----------------------------------------------------------------------
     roi_benchmark_minutos: int = 30
+    # Ticket médio de uma consulta (R$) — base da "Receita Adicional Potencial" do dashboard B2B
+    roi_ticket_medio_consulta: float = 150.0
 
     model_config = SettingsConfigDict(
         env_file=".env",

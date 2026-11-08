@@ -12,12 +12,13 @@ from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.dependencies import garantir_utc
 from app.models import Consulta, FormularioTriagem, RelatorioIA
+from app.services.ai_schemas import COR_POR_NIVEL, NivelPrioridade
 
 
 def duracao_minutos(inicio: datetime, fim: datetime) -> float:
@@ -152,3 +153,69 @@ async def calcular_roi(
         ),
     }
 
+
+
+# Ordem de exibição do Protocolo de Manchester (mais grave primeiro)
+_ORDEM_MANCHESTER = [(n, COR_POR_NIVEL[n].value) for n in NivelPrioridade]
+
+
+async def calcular_metricas(
+    db: AsyncSession,
+    id_clinica: int,
+    de: datetime,
+    ate: datetime,
+    id_medico: Optional[int] = None,
+) -> dict:
+    """ROI (RN-003) + Receita Adicional Potencial + distribuição de risco Manchester + resgates."""
+    base = await calcular_roi(db, id_clinica, de, ate, id_medico)
+    de, ate = garantir_utc(de), garantir_utc(ate)
+
+    filtros = [Consulta.id_clinica == id_clinica]
+    if id_medico:
+        filtros.append(Consulta.id_medico == id_medico)
+    data_ref = func.coalesce(Consulta.agendada_para, Consulta.criada_em)
+    no_periodo = [*filtros, Consulta.status != "cancelada", data_ref >= de, data_ref <= ate]
+
+    # Distribuição por cor: relatório da IA; sem relatório, a urgência determinística vale VERMELHO
+    cor = func.coalesce(
+        RelatorioIA.cor_prioridade,
+        case((FormularioTriagem.urgencia_deterministica.is_(True), "VERMELHO"), else_=None),
+    )
+    linhas = (
+        await db.execute(
+            select(cor.label("cor"), func.count(FormularioTriagem.id_formulario))
+            .select_from(FormularioTriagem)
+            .join(Consulta, Consulta.id_consulta == FormularioTriagem.id_consulta)
+            .outerjoin(RelatorioIA, RelatorioIA.id_formulario == FormularioTriagem.id_formulario)
+            .where(*no_periodo)
+            .group_by(cor)
+        )
+    ).all()
+    por_cor = {c: int(n) for c, n in linhas if c}
+    total = sum(por_cor.values())
+    distribuicao = [
+        {
+            "cor": c, "nivel": n.value, "quantidade": por_cor.get(c, 0),
+            "percentual": round(100 * por_cor.get(c, 0) / total, 1) if total else 0.0,
+        }
+        for n, c in _ORDEM_MANCHESTER
+    ]
+
+    acionadas = (
+        await db.execute(
+            select(Consulta.modalidade_emergencia, func.count(Consulta.id_consulta))
+            .where(*no_periodo, Consulta.modalidade_emergencia.is_not(None))
+            .group_by(Consulta.modalidade_emergencia)
+        )
+    ).all()
+    por_modalidade = {m: int(n) for m, n in acionadas}
+
+    ticket = float(settings.roi_ticket_medio_consulta)
+    return {
+        **base,
+        "ticket_medio_consulta": ticket,
+        "receita_adicional_potencial": round(base["capacidade_extra_atendimentos"] * ticket, 2),
+        "distribuicao_risco": distribuicao,
+        "emergencias_acionadas": sum(por_modalidade.values()),
+        "resgates_solicitados": por_modalidade.get("RESGATE_SOLICITADO", 0),
+    }

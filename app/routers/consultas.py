@@ -68,8 +68,13 @@ def _montar_item(c: Consulta, pet: Pet, tutor: Tutor, medico: MedicoVeterinario,
                  form: Optional[FormularioTriagem], rel: Optional[RelatorioIA],
                  clinica_nome: str) -> ConsultaFilaItem:
     # RN-001: determinístico OU semântico (IA)
-    urgencia = bool(form and (form.urgencia_deterministica or (rel and rel.flag_urgencia_detectada)))
-    if form is None:
+    # RN-001 v2.0: a emergência acionada pelo tutor ("a caminho"/resgate) também é urgência,
+    # mesmo antes de o formulário ser enviado.
+    urgencia = bool(
+        c.modalidade_emergencia
+        or (form and (form.urgencia_deterministica or (rel and rel.flag_urgencia_detectada)))
+    )
+    if form is None and not urgencia:
         st = "pendente"
     elif urgencia:
         st = "urgencia"
@@ -116,6 +121,10 @@ def _montar_item(c: Consulta, pet: Pet, tutor: Tutor, medico: MedicoVeterinario,
         fim_consulta=c.fim_consulta,
         duracao_minutos=dur,
         minutos_economizados=eco,
+        modalidade_emergencia=c.modalidade_emergencia,
+        localizacao_gps_tutor=c.localizacao_gps_tutor,
+        maps_url_tutor=links.maps_url_localizacao(c.localizacao_gps_tutor),
+        ciente_risco_morte=bool(form and form.ciente_risco_morte),
     )
 
 
@@ -161,10 +170,17 @@ async def _consultar_fila(
 
     linhas = (await db.execute(stmt)).all()
     itens = [_montar_item(c, p, t, m, f, r, nome) for c, p, t, m, f, r, nome in linhas]
-    # Urgências primeiro (fila do topo), depois em andamento, depois por horário
+    # Topo da fila: 0 = emergência acionada pelo tutor (a caminho/resgate) · 1 = demais urgências ·
+    # 2 = restante; depois em andamento, agendadas e encerradas (sort estável preserva o horário)
     ordem = {"em_andamento": 0, "agendada": 1, "finalizada": 2, "cancelada": 3}
-    itens.sort(key=lambda i: (not (i.urgencia and i.status in ("agendada", "em_andamento")),
-                              ordem.get(i.status, 9)))
+
+    def _rank(i: ConsultaFilaItem) -> int:
+        aberta = i.status in ("agendada", "em_andamento")
+        if aberta and i.modalidade_emergencia:
+            return 0
+        return 1 if (aberta and i.urgencia) else 2
+
+    itens.sort(key=lambda i: (_rank(i), ordem.get(i.status, 9)))
     return itens
 
 

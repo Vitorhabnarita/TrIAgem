@@ -11,9 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import agora_utc, garantir_utc
 from app.exceptions import EstadoInvalido
-from app.schemas import RoiOut
+from app.schemas import MetricasOut, RoiOut
 from app.security import PAPEL_GESTOR, UsuarioAtual, exigir_papeis
-from app.services.roi import calcular_roi
+from app.services.roi import calcular_metricas, calcular_roi
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard B2B"])
 
@@ -34,3 +34,21 @@ async def roi(
         raise EstadoInvalido("Período máximo de 366 dias.")
     return await calcular_roi(db, user.id_clinica, ini, fim, id_medico)
 
+
+
+@router.get("/metricas", response_model=MetricasOut,
+            summary="Dashboard executivo: ROI, receita potencial e distribuição de risco Manchester")
+async def metricas(
+    de: Optional[datetime] = Query(None, description="Início (ISO 8601). Padrão: 30 dias atrás."),
+    ate: Optional[datetime] = Query(None, description="Fim (ISO 8601). Padrão: agora."),
+    id_medico: Optional[int] = Query(None, gt=0),
+    user: UsuarioAtual = Depends(exigir_papeis(PAPEL_GESTOR)),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    fim = garantir_utc(ate) if ate else agora_utc()
+    ini = garantir_utc(de) if de else fim - timedelta(days=30)
+    if ini >= fim:
+        raise EstadoInvalido("O início do período deve ser anterior ao fim.")
+    if (fim - ini).days > 366:
+        raise EstadoInvalido("Período máximo de 366 dias.")
+    return await calcular_metricas(db, user.id_clinica, ini, fim, id_medico)

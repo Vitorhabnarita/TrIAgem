@@ -21,6 +21,8 @@ from app.schemas import (
     TutorOut,
 )
 from app.security import PAPEL_GESTOR, PAPEL_MEDICO, PAPEL_RECEPCAO, UsuarioAtual, exigir_papeis
+from app.services import links
+from app.services.guardrails import PROTOCOLO_ABC_EMERGENCIA
 from app.services.triagem_service import processar_ia_em_background
 
 router = APIRouter(prefix="/triagem", tags=["Painel Clínico"])
@@ -44,7 +46,10 @@ async def briefing(
 
     sintomas_urg = [s.nome_sintoma for s in form.sintomas if s.alerta_urgencia] if form else []
     # RN-001: determinístico OR semântico
-    urgencia = bool(form and (form.urgencia_deterministica or (rel and rel.flag_urgencia_detectada)))
+    urgencia = bool(
+        c.modalidade_emergencia
+        or (form and (form.urgencia_deterministica or (rel and rel.flag_urgencia_detectada)))
+    )
 
     return BriefingOut(
         id_consulta=c.id_consulta,
@@ -63,6 +68,13 @@ async def briefing(
         status_ia=form.status_ia if form else None,
         medicamento_continuo=form.medicamento_continuo if form else None,
         benchmark_minutos=settings.roi_benchmark_minutos,
+        modalidade_emergencia=c.modalidade_emergencia,
+        localizacao_gps_tutor=c.localizacao_gps_tutor,
+        maps_url_tutor=links.maps_url_localizacao(c.localizacao_gps_tutor),
+        ciente_risco_morte=bool(form and form.ciente_risco_morte),
+        alerta_critico_exibido_em=form.alerta_critico_exibido_em if form else None,
+        # Protocolo de Descarte Diferencial Anti-Ancoragem (determinístico, independe da IA)
+        protocolo_abc_emergencia=list(PROTOCOLO_ABC_EMERGENCIA) if urgencia else [],
     )
 
 

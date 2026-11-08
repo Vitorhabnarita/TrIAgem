@@ -53,6 +53,18 @@ class Clinica(Base):
     segmento: Mapped[str] = mapped_column(
         String(20), nullable=False, default="veterinaria", server_default="veterinaria"
     )
+    # RN-001 v2.0 — Protocolo de Emergência e Logística de Resgate (migração 004)
+    atendimento_24h: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    horario_fechamento: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="18:00", server_default="18:00"
+    )  # "HH:MM" — usado apenas quando atendimento_24h = False
+    possui_veiculo_resgate: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    telefone_emergencia: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    endereco_completo: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
 
     # Relacionamentos
     medicos: Mapped[List["MedicoVeterinario"]] = relationship(
@@ -241,6 +253,11 @@ class Consulta(Base):
     token_expira_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     inicio_consulta: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     fim_consulta: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # RN-001 v2.0 — logística de emergência acionada pelo tutor (migração 004)
+    # 'EMERGENCIA_A_CAMINHO' | 'RESGATE_SOLICITADO' | NULL
+    modalidade_emergencia: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    # "lat,lng" (GPS do navegador) ou endereço digitado pelo tutor
+    localizacao_gps_tutor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     # Relacionamentos
     pet: Mapped["Pet"] = relationship("Pet", back_populates="consultas")
@@ -332,6 +349,14 @@ class FormularioTriagem(Base):
     )
     submetido_em: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # RN-001 v2.0 — auditoria jurídica: quando o alerta crítico foi exibido ao tutor e se ele
+    # declarou ciência do risco de morte (migração 004)
+    alerta_critico_exibido_em: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    ciente_risco_morte: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
     )
 
     # Relacionamentos

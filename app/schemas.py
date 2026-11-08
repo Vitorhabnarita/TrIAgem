@@ -23,6 +23,18 @@ def _so_digitos(v: str) -> str:
     return re.sub(r"\D", "", v or "")
 
 
+# RN-001 v2.0 — logística de emergência acionada pelo tutor
+ModalidadeEmergencia = Literal["EMERGENCIA_A_CAMINHO", "RESGATE_SOLICITADO"]
+
+
+def _limpa_localizacao(v: Optional[str]) -> Optional[str]:
+    """Remove caracteres de controle e espaços; string vazia vira None."""
+    if v is None:
+        return None
+    v = re.sub(r"[\x00-\x1f\x7f]", " ", v).strip()
+    return v or None
+
+
 # ===========================================================================
 # Autenticação
 # ===========================================================================
@@ -208,6 +220,11 @@ class ConsultaFilaItem(BaseModel):
     fim_consulta: Optional[datetime] = None
     duracao_minutos: Optional[float] = None
     minutos_economizados: Optional[float] = None
+    # RN-001 v2.0 — topo da fila: paciente em deslocamento ou resgate solicitado
+    modalidade_emergencia: Optional[str] = None
+    localizacao_gps_tutor: Optional[str] = None
+    maps_url_tutor: Optional[str] = None
+    ciente_risco_morte: bool = False
 
 
 class ConsultaFinalizadaOut(BaseModel):
@@ -249,6 +266,23 @@ class SintomaPublicoOut(_Orm):
     nome_sintoma: str
     alerta_urgencia: bool
     categoria: str
+    # RN-001 v2.0: chave do "O que NÃO fazer" aplicável (INTOXICACAO, NEUROLOGICO, DISPNEIA, ...)
+    categoria_emergencia: Optional[str] = None
+
+
+class ProtocoloEmergenciaPublicoOut(BaseModel):
+    """Dados que o frontend do tutor precisa para o Disjuntor de Emergência (RN-001 v2.0)."""
+
+    atendimento_24h: bool
+    clinica_aberta_agora: bool
+    horario_fechamento: str
+    possui_veiculo_resgate: bool
+    whatsapp_plantao: Optional[str] = None      # telefone de plantão (sem o termo "telefone": rota pública)
+    endereco_completo: Optional[str] = None
+    url_hospital_24h: str
+    rota_clinica: dict[str, str]
+    primeiros_socorros_negativos: dict[str, str]
+    gatilhos_texto: list[dict[str, str]]
 
 
 class TriagemContextoOut(BaseModel):
@@ -260,6 +294,8 @@ class TriagemContextoOut(BaseModel):
     estado: Literal["aguardando", "preenchida", "expirada", "cancelada"]
     sintomas: list[SintomaPublicoOut]
     texto_termo: str
+    emergencia: ProtocoloEmergenciaPublicoOut
+    modalidade_emergencia: Optional[str] = None
 
 
 class TriagemSubmissao(BaseModel):
@@ -279,6 +315,16 @@ class TriagemSubmissao(BaseModel):
     tempo_evolucao: str = Field(..., min_length=1, max_length=100)
     relato_livre_tutor: str = Field(..., min_length=10, max_length=4000)
     sintoma_ids: list[int] = Field(default_factory=list, max_length=60)
+    # RN-001 v2.0 — auditoria jurídica e logística de emergência (todos opcionais)
+    ciente_risco_morte: bool = False
+    alerta_critico_exibido_em: Optional[datetime] = None
+    modalidade_emergencia: Optional[ModalidadeEmergencia] = None
+    localizacao_gps_tutor: Optional[str] = Field(default=None, max_length=255)
+
+    @field_validator("localizacao_gps_tutor")
+    @classmethod
+    def _loc(cls, v: Optional[str]) -> Optional[str]:
+        return _limpa_localizacao(v)
 
     @field_validator("aceite_termo")
     @classmethod
@@ -313,6 +359,12 @@ class TriagemSubmissaoOut(BaseModel):
     acao_recomendada: Literal["PRONTO_SOCORRO_IMEDIATO", "AGUARDAR_ATENDIMENTO"]
     mensagem_para_tutor: str
     status_ia: str
+    # RN-001 v2.0: "O que NÃO fazer em casa" e logística de emergência registrada
+    primeiros_socorros_negativos: dict[str, str] = {}
+    termos_criticos_relato: list[str] = []
+    modalidade_emergencia: Optional[str] = None
+    maps_url_tutor: Optional[str] = None
+    whatsapp_resgate_url: Optional[str] = None
 
 
 class ResultadoTutorOut(BaseModel):
@@ -321,6 +373,45 @@ class ResultadoTutorOut(BaseModel):
     acao_recomendada: Literal["PRONTO_SOCORRO_IMEDIATO", "AGUARDAR_ATENDIMENTO"]
     alerta_seguranca_tutor: Optional[str] = None
     nivel_prioridade: Optional[str] = None
+    primeiros_socorros_negativos: dict[str, str] = {}
+    modalidade_emergencia: Optional[str] = None
+
+
+class AcionarEmergenciaIn(BaseModel):
+    """Tutor clicou em 'Estou a Caminho' ou 'Solicitar Veículo de Resgate da Clínica'."""
+
+    modalidade: ModalidadeEmergencia
+    localizacao_gps_tutor: Optional[str] = Field(default=None, max_length=255)
+    ciente_risco_morte: bool = False
+    alerta_critico_exibido_em: Optional[datetime] = None
+    categorias_emergencia: list[str] = Field(default_factory=list, max_length=6)
+
+    @field_validator("localizacao_gps_tutor")
+    @classmethod
+    def _loc(cls, v: Optional[str]) -> Optional[str]:
+        return _limpa_localizacao(v)
+
+    @model_validator(mode="after")
+    def _resgate_exige_localizacao(self) -> "AcionarEmergenciaIn":
+        if self.modalidade == "RESGATE_SOLICITADO" and (
+            not self.localizacao_gps_tutor or len(self.localizacao_gps_tutor) < 5
+        ):
+            raise ValueError(
+                "Para solicitar o veículo de resgate, informe sua localização (GPS ou endereço)."
+            )
+        return self
+
+
+class AcionarEmergenciaOut(BaseModel):
+    registrada: bool = True
+    modalidade_emergencia: ModalidadeEmergencia
+    localizacao_gps_tutor: Optional[str] = None
+    maps_url_tutor: Optional[str] = None
+    whatsapp_resgate_url: Optional[str] = None      # wa.me do plantão (só no resgate)
+    rota_clinica: dict[str, str]                    # Google Maps/Waze até a clínica
+    whatsapp_plantao: Optional[str] = None
+    primeiros_socorros_negativos: dict[str, str]
+    mensagem_para_tutor: str
 
 
 # ===========================================================================
@@ -406,6 +497,13 @@ class BriefingOut(BaseModel):
     status_ia: Optional[str] = None
     medicamento_continuo: Optional[str] = None
     benchmark_minutos: int
+    # RN-001 v2.0 — status de deslocamento/resgate e Protocolo Anti-Ancoragem (ABC de Emergência)
+    modalidade_emergencia: Optional[str] = None
+    localizacao_gps_tutor: Optional[str] = None
+    maps_url_tutor: Optional[str] = None
+    ciente_risco_morte: bool = False
+    alerta_critico_exibido_em: Optional[datetime] = None
+    protocolo_abc_emergencia: list[str] = []
 
 
 # ===========================================================================
@@ -435,3 +533,20 @@ class RoiOut(BaseModel):
     urgencias_pct: float
     serie_diaria: list[RoiSerieDia]
     observacao: str
+
+
+class RiscoDistribuicaoItem(BaseModel):
+    cor: str                 # VERMELHO | LARANJA | AMARELO | VERDE | AZUL (Protocolo de Manchester)
+    nivel: str
+    quantidade: int
+    percentual: float
+
+
+class MetricasOut(RoiOut):
+    """Dashboard executivo B2B: ROI + receita potencial + distribuição de risco Manchester."""
+
+    ticket_medio_consulta: float
+    receita_adicional_potencial: float
+    distribuicao_risco: list[RiscoDistribuicaoItem]
+    emergencias_acionadas: int
+    resgates_solicitados: int

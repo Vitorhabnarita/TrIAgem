@@ -18,12 +18,24 @@ from app.database import AsyncSessionLocal
 from app.models import Consulta, FormularioTriagem, Pet, RelatorioIA
 from app.services import ai_service
 from app.services.ai_service import DadosTriagem, IAIndisponivel
+from app.services.guardrails import detectar_termos_criticos
 
 logger = logging.getLogger("triagem.pipeline")
 
 
-def montar_dados(formulario: FormularioTriagem, pet: Pet) -> DadosTriagem:
+def montar_dados(
+    formulario: FormularioTriagem, pet: Pet, modalidade_emergencia: Optional[str] = None
+) -> DadosTriagem:
     sintomas = list(formulario.sintomas)
+    sintomas_urgencia = [s.nome_sintoma for s in sintomas if s.alerta_urgencia]
+    # RN-001 v2.0: o gatilho também nasce de termos críticos no relato livre e da emergência
+    # acionada pelo tutor — assim a IA nunca rebaixa um caso que o disjuntor já classificou.
+    sintomas_urgencia += [
+        f"Relato livre do tutor contém termo crítico: {t}"
+        for t in detectar_termos_criticos(formulario.relato_livre_tutor)
+    ]
+    if modalidade_emergencia and not sintomas_urgencia:
+        sintomas_urgencia.append("Emergência acionada pelo tutor antes do envio da triagem")
     return DadosTriagem(
         especie=pet.especie,
         raca=pet.raca,
@@ -42,10 +54,11 @@ def montar_dados(formulario: FormularioTriagem, pet: Pet) -> DadosTriagem:
         tempo_evolucao=formulario.tempo_evolucao,
         relato_livre_tutor=formulario.relato_livre_tutor,
         sintomas_marcados=[s.nome_sintoma for s in sintomas],
-        sintomas_urgencia=[s.nome_sintoma for s in sintomas if s.alerta_urgencia],
+        sintomas_urgencia=sintomas_urgencia,
         peso_kg=float(pet.peso_kg) if pet.peso_kg is not None else None,
         porte=pet.porte,
         status_reprodutivo=pet.status_reprodutivo,
+        emergencia_acionada=modalidade_emergencia,
     )
 
 
@@ -69,7 +82,9 @@ async def processar_ia_em_background(id_formulario: int) -> None:
                 logger.error("Formulário %s não encontrado para processamento de IA.", id_formulario)
                 return
 
-            dados = montar_dados(formulario, formulario.consulta.pet)
+            dados = montar_dados(
+                formulario, formulario.consulta.pet, formulario.consulta.modalidade_emergencia
+            )
             try:
                 resultado = await ai_service.gerar_briefing(dados)
             except IAIndisponivel as exc:

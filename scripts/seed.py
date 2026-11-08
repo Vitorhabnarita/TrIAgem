@@ -51,19 +51,44 @@ from app.services.guardrails import normalizar_briefing, verificar_violacoes_eti
 
 CNPJ_DEMO = "00.000.000/0001-91"
 NOME_CLINICA_DEMO = "Hospital Veterinário Vida Pet 24h"
+# RN-001 v2.0 — protocolo de emergência e logística de resgate da clínica demo (Anápolis-GO)
+DADOS_EMERGENCIA_DEMO = dict(
+    atendimento_24h=True,
+    horario_fechamento="18:00",
+    possui_veiculo_resgate=True,
+    telefone_emergencia="5562999990000",
+    endereco_completo="Av. Brasil Sul, 1500 - Jundiaí, Anápolis - GO, 75110-000",
+)
 MODELO_SEED = "seed-demonstrativo"
+
+# --- RN-001 v2.0: sinais explícitos de emergência (alerta_urgencia = True) ---
+S_ENVENENAMENTO = (
+    "Suspeita de Envenenamento / Ingestão de Tóxicos "
+    "(chumbinho, veneno de rato, plantas, sapo, chocolate ou remédio humano)"
+)
+S_TRAUMA = "Atropelamento / Trauma Agudo / Queda de Altura"
+S_ENGASGO = "Engasgo Ativo / Asfixia / Língua Roxa ou Azulada (Cianose)"
+S_HEMORRAGIA = "Hemorragia Intensa / Sangramento que não estanca"
+
+# Nomes antigos do catálogo → nome RN-001 v2.0 (renomeados NO LUGAR, preservando o histórico dos formulários)
+RENOMEADOS: dict[str, str] = {
+    "Suspeita de ingestão de veneno, remédio ou produto tóxico": S_ENVENENAMENTO,
+    "Atropelamento, queda de altura ou trauma grave": S_TRAUMA,
+    "Sangramento ativo ou que não para": S_HEMORRAGIA,
+}
 
 # (nome, urgência, categoria)
 CATALOGO: list[tuple[str, bool, str]] = [
     # --- Sinais de URGÊNCIA (RN-001 — gatilho determinístico) ---
     ("Convulsão (tremores, rigidez ou perda de controle do corpo)", True, "Emergência"),
     ("Dificuldade grave para respirar / falta de ar", True, "Emergência"),
-    ("Sangramento ativo ou que não para", True, "Emergência"),
+    (S_HEMORRAGIA, True, "Emergência"),
     ("Desmaio ou perda de consciência", True, "Emergência"),
     ("Tentativa de urinar sem sucesso (faz esforço e não sai nada)", True, "Emergência"),
     ("Tentativa de vomitar sem sucesso com barriga inchada", True, "Emergência"),
-    ("Suspeita de ingestão de veneno, remédio ou produto tóxico", True, "Emergência"),
-    ("Atropelamento, queda de altura ou trauma grave", True, "Emergência"),
+    (S_ENVENENAMENTO, True, "Emergência"),
+    (S_TRAUMA, True, "Emergência"),
+    (S_ENGASGO, True, "Emergência"),
     ("Gengivas muito pálidas, azuladas ou roxas", True, "Emergência"),
     ("Barriga muito inchada e dura", True, "Emergência"),
     ("Dor intensa (grita ou não deixa ser tocado)", True, "Emergência"),
@@ -108,6 +133,10 @@ S_FALTA_AR = "Dificuldade grave para respirar / falta de ar"
 async def seed_sintomas() -> None:
     async with AsyncSessionLocal() as db:
         existentes = {s.nome_sintoma: s for s in (await db.execute(select(Sintoma))).scalars()}
+        for antigo, novo in RENOMEADOS.items():   # migra bancos já populados sem duplicar o catálogo
+            if antigo in existentes and novo not in existentes:
+                existentes[antigo].nome_sintoma = novo
+                existentes[novo] = existentes.pop(antigo)
         novos = 0
         for nome, urgencia, categoria in CATALOGO:
             s = existentes.get(nome)
@@ -170,7 +199,7 @@ def _casos_do_dia() -> list[dict]:
     return [
         # 1) Pastor Alemão — emergência (RN-001 determinístico) — AGUARDANDO atendimento
         dict(
-            medico=0, status="agendada", min_agenda=+5,
+            medico=0, status="agendada", min_agenda=+5, modalidade="EMERGENCIA_A_CAMINHO",
             tutor=("Carlos Eduardo Lima", "11987654321"),
             pet=dict(nome="Thor", especie="Cão", raca="Pastor Alemão", sexo="Macho", idade_texto="4 anos",
                      peso_kg=Decimal("38.00"), porte="Grande", status_reprodutivo="Inteiro"),
@@ -223,7 +252,8 @@ def _casos_do_dia() -> list[dict]:
         ),
         # 2) Gato Persa — emergência (RN-001 determinístico) — AGUARDANDO atendimento
         dict(
-            medico=0, status="agendada", min_agenda=+12,
+            medico=0, status="agendada", min_agenda=+12, modalidade="RESGATE_SOLICITADO",
+            gps="-16.3281,-48.9534",
             tutor=("Fernanda Souza Martins", "21998761234"),
             pet=dict(nome="Simba", especie="Gato", raca="Persa", sexo="Macho", idade_texto="6 anos",
                      peso_kg=Decimal("5.00"), porte="Pequeno", status_reprodutivo="Castrado"),
@@ -569,13 +599,14 @@ async def _obter_tutor_pet(db, id_clinica: int, tutor: tuple[str, str], pet: dic
 
 async def _criar_consulta(db, *, id_clinica, pet, medico, status, agendada, sintomas_por_nome,
                           triagem=None, briefing=None, inicio=None, fim=None, urgencia=False,
-                          tutor=None) -> None:
+                          tutor=None, modalidade=None, gps=None) -> None:
     c = Consulta(
         id_clinica=id_clinica, id_pet=pet.id_pet, id_medico=medico.id_medico, status=status,
         agendada_para=agendada, criada_em=agendada - timedelta(minutes=30),
         token_triagem=gerar_token_triagem(),
         token_expira_em=max(_agora(), agendada) + timedelta(hours=72),
         inicio_consulta=inicio, fim_consulta=fim,
+        modalidade_emergencia=modalidade, localizacao_gps_tutor=gps,
     )
     db.add(c)
     await db.flush()
@@ -588,6 +619,9 @@ async def _criar_consulta(db, *, id_clinica, pet, medico, status, agendada, sint
         id_consulta=c.id_consulta,
         urgencia_deterministica=any(s.alerta_urgencia for s in sintomas),
         status_ia="concluida", submetido_em=submetido, **{k: v for k, v in dados.items() if k != "submetido_em"},
+        # auditoria jurídica (RN-001 v2.0): ciência do risco registrada quando o tutor acionou a emergência
+        ciente_risco_morte=bool(modalidade),
+        alerta_critico_exibido_em=(submetido - timedelta(seconds=20)) if modalidade else None,
     )
     f.sintomas = sintomas
     db.add(f)
@@ -627,6 +661,7 @@ async def _popular_agenda(db, clinica: Clinica, medicos: list[MedicoVeterinario]
             db, id_clinica=clinica.id_clinica, pet=pet, medico=medicos[caso["medico"]], status=caso["status"],
             agendada=agendada, sintomas_por_nome=sintomas_por_nome, triagem=triagem, briefing=briefing,
             inicio=inicio, fim=fim, tutor=tutor_obj,
+            modalidade=caso.get("modalidade"), gps=caso.get("gps"),
         )
 
     # --- Histórico de 14 dias (alimenta o dashboard de ROI) ---
@@ -671,11 +706,14 @@ async def seed_demo(reset: bool = False, gravar_credenciais: bool = True) -> Non
         clinica = await db.scalar(select(Clinica).where(Clinica.cnpj == CNPJ_DEMO))
         criou_usuarios = False
         if clinica is None:
-            clinica = Clinica(nome_fantasia=NOME_CLINICA_DEMO, cnpj=CNPJ_DEMO, segmento="veterinaria")
+            clinica = Clinica(nome_fantasia=NOME_CLINICA_DEMO, cnpj=CNPJ_DEMO, segmento="veterinaria",
+                              **DADOS_EMERGENCIA_DEMO)
             db.add(clinica)
             await db.flush()
         else:
             clinica.nome_fantasia, clinica.segmento = NOME_CLINICA_DEMO, "veterinaria"
+            for campo, valor in DADOS_EMERGENCIA_DEMO.items():
+                setattr(clinica, campo, valor)
 
         medicos: list[MedicoVeterinario] = []
         for nome, crmv in (("Dra. Helena Duarte", "CRMV-SP 10001"), ("Dr. Rafael Menezes", "CRMV-SP 10002")):

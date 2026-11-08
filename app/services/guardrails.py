@@ -68,9 +68,21 @@ _PADROES_PRESCRICAO = [
     r"\b(tratamento|terapia|conduta)\s+(com|de|recomendad[oa]|indicad[oa])\b",
 ]
 
+# RN-001 v2.0 — antídotos e condutas invasivas: a IA NUNCA pode citá-los (texto sem acento/minúsculo)
+_PADROES_ANTIDOTO = [
+    r"\batropina\b",
+    r"\bcarvao\s+ativad[oa]\b",
+    r"\bvitamina\s+k\s*-?\s*1\b",
+    r"\blavagem\s+gastrica\b",
+    r"\b(induz\w*|provoc\w*|estimul\w*|fazer|forcar|forcando)\s+(o\s+|a\s+|um\s+)?(vomito|emese|vomitar)\b",
+    r"\bapomorfina\b",
+    r"\bagua\s+oxigenada\b",
+]
+
 _PADROES_DOENCA = [re.compile(r"\b" + re.escape(d) + r"\b") for d in _DOENCAS]
 _PADROES_DIAG_RE = [re.compile(p) for p in _PADROES_DIAGNOSTICO]
 _PADROES_PRESC_RE = [re.compile(p) for p in _PADROES_PRESCRICAO]
+_PADROES_ANTIDOTO_RE = [re.compile(p) for p in _PADROES_ANTIDOTO]
 
 
 def _textos_do_briefing(b: BriefingIA) -> list[tuple[str, str]]:
@@ -104,7 +116,107 @@ def verificar_violacoes_eticas(b: BriefingIA) -> list[str]:
             for rx in _PADROES_DOENCA:
                 if rx.search(t):
                     violacoes.append(f"{campo}: nome de doença ('{rx.pattern[2:-2]}')")
+            # RN-001 v2.0: antídotos/condutas invasivas. Exceção: o campo de medicação reproduz o que
+            # o TUTOR informou ter administrado (ex.: "água oxigenada"), dado clínico essencial.
+            for rx in _PADROES_ANTIDOTO_RE:
+                if rx.search(t):
+                    violacoes.append(f"{campo}: antídoto/conduta invasiva ({rx.pattern[:40]}…)")
     return violacoes
+
+
+# ---------------------------------------------------------------------------
+# RN-001 v2.0 — Protocolo de Emergência (conteúdo DETERMINÍSTICO, nunca gerado por IA)
+# ---------------------------------------------------------------------------
+
+# Primeiros Socorros Negativos ("O Que NÃO Fazer em Casa") por tipo de quadro.
+PRIMEIROS_SOCORROS_NEGATIVOS: dict[str, str] = {
+    "INTOXICACAO": (
+        "PROIBIDO dar leite, azeite, água ou remédios caseiros. NÃO provoque vômito (risco de asfixia e "
+        "queimadura esofágica). Se possível, leve a embalagem ou foto do agente suspeito."
+    ),
+    "NEUROLOGICO": (
+        "NÃO coloque a mão na boca do animal (ele não engole a língua). Afaste objetos ao redor, proteja a "
+        "cabeça com um pano macio e desloque-se imediatamente."
+    ),
+    "DISPNEIA": (
+        "Mantenha o animal em local fresco, retire coleiras apertadas e evite comprimir o tórax ou forçá-lo "
+        "a deitar."
+    ),
+    "TRAUMA": (
+        "NÃO levante o animal bruscamente nem o faça andar. Se precisar movê-lo, apoie o corpo inteiro sobre "
+        "uma superfície firme (tábua, papelão rígido ou cobertor esticado). NÃO ofereça comida, água ou remédios."
+    ),
+    "HEMORRAGIA": (
+        "NÃO remova objetos cravados no corpo e NÃO ofereça remédios. Pressione a ferida com pano limpo e, "
+        "se o pano encharcar, acrescente outro por cima sem retirar o primeiro. Desloque-se imediatamente."
+    ),
+    "GERAL": (
+        "NÃO ofereça comida, água ou remédios por conta própria e NÃO force o animal a se movimentar. "
+        "Mantenha-o calmo, aquecido e desloque-se imediatamente para atendimento veterinário."
+    ),
+}
+
+# Protocolo de Descarte Diferencial Anti-Ancoragem: ABC de Emergência apresentado ao médico.
+PROTOCOLO_ABC_EMERGENCIA: list[str] = [
+    "A — Vias aéreas: avaliar permeabilidade (corpo estranho, edema, cianose de língua/mucosas).",
+    "B — Padrão respiratório: frequência, esforço, ausculta pulmonar e saturação, se disponível.",
+    "C — Circulação: TPC, coloração de mucosas, pulso (frequência/qualidade) e frequência cardíaca.",
+    "Temperatura retal (hipo/hipertermia) e glicemia capilar na entrada.",
+    "Preparar o Box de Emergência (oxigênio e acesso venoso) sem fechar hipótese precipitada.",
+    "Distinguir exposição PRESENCIADA de exposição SUPOSTA/relatada; tratar como "
+    "'Suspeita Leiga Relatada (A Confirmar)' até a confirmação no exame físico.",
+]
+
+# (padrão sem acento → categoria do primeiro socorro negativo). Aplicados ao relato livre e ao
+# nome dos sintomas de urgência. Ordem = prioridade de classificação.
+_GATILHOS_EMERGENCIA: list[tuple[str, str, str]] = [
+    # (termo exibido, regex em texto sem acento, categoria)
+    ("veneno", r"\bvenen\w*", "INTOXICACAO"),
+    ("chumbinho", r"\bchumbinho\b|\braticida\b", "INTOXICACAO"),
+    ("intoxicação", r"\bintoxic\w*|\btoxic\w*", "INTOXICACAO"),
+    ("convulsão", r"\bconvuls\w*", "NEUROLOGICO"),
+    ("não respira", r"\bnao\s+(esta\s+)?respira\w*|\bsem\s+respirar\b|\bfalta\s+de\s+ar\b|\bdificuldade\s+(grave\s+)?para\s+respirar\b",
+     "DISPNEIA"),
+    ("língua roxa",
+     r"\blingua\s+((esta|ficou|muito)\s+)?(roxa|azul\w*)|\bcianose\b|\bgengivas?\s+((estao|muito)\s+)?(roxas?|azuladas?)|\bazulad\w*",
+     "DISPNEIA"),
+    ("engasgo", r"\bengasg\w*|\basfixi\w*", "DISPNEIA"),
+    ("atropelado", r"\batropel\w*|\bqueda\s+de\s+altura\b|\bcaiu\s+(da|do|de)\s+(janela|sacada|laje|varanda)",
+     "TRAUMA"),
+    ("sangrando muito",
+     r"\bsangrando\s+(muito|demais|bastante)|\bhemorragia\b|\bsangramento\s+(ativo|intenso)|\bsangue\s+(que\s+)?nao\s+(para|estanca)",
+     "HEMORRAGIA"),
+]
+_GATILHOS_EMERGENCIA_RE = [(t, re.compile(p), c) for t, p, c in _GATILHOS_EMERGENCIA]
+
+# Texto de apoio ao frontend (disjuntor em tempo real): mesmo critério usado no servidor.
+GATILHOS_TEXTO_PUBLICO: list[dict[str, str]] = [
+    {"termo": t, "padrao": p, "categoria": c} for t, p, c in _GATILHOS_EMERGENCIA
+]
+
+
+def classificar_emergencia(texto: str) -> str | None:
+    """Categoria do quadro de emergência (chave de PRIMEIROS_SOCORROS_NEGATIVOS) ou None."""
+    t = _sem_acento(texto or "")
+    for _, rx, categoria in _GATILHOS_EMERGENCIA_RE:
+        if rx.search(t):
+            return categoria
+    return None
+
+
+def detectar_termos_criticos(texto: str) -> list[str]:
+    """Termos críticos (RN-001 v2.0) presentes no relato livre do tutor — gatilho determinístico."""
+    t = _sem_acento(texto or "")
+    return [termo for termo, rx, _ in _GATILHOS_EMERGENCIA_RE if rx.search(t)]
+
+
+def primeiros_socorros_para(categorias: list[str | None]) -> dict[str, str]:
+    """Subconjunto (ordenado, sem duplicatas) dos 'O que NÃO fazer' aplicáveis às categorias."""
+    saida: dict[str, str] = {}
+    for c in categorias:
+        if c and c in PRIMEIROS_SOCORROS_NEGATIVOS and c not in saida:
+            saida[c] = PRIMEIROS_SOCORROS_NEGATIVOS[c]
+    return saida or {"GERAL": PRIMEIROS_SOCORROS_NEGATIVOS["GERAL"]}
 
 
 # ---------------------------------------------------------------------------
