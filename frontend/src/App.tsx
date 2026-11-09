@@ -2,7 +2,9 @@ import React from 'react'
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider, ROTA_POR_PAPEL, useAuth } from './context/AuthContext'
 import { TopBar } from './components/TopBar'
+import { GestaoPage } from './pages/GestaoPage'
 import { LoginPage } from './pages/LoginPage'
+import { MedicoPage } from './pages/MedicoPage'
 import { RecepcaoPage } from './pages/RecepcaoPage'
 import { TutorWizardPage } from './pages/TutorWizardPage'
 
@@ -21,16 +23,6 @@ function RedirecionadorRaiz() {
   const { sessao } = useAuth()
   if (!sessao) return <Navigate to="/login" replace />
   return <Navigate to={ROTA_POR_PAPEL[sessao.usuario.papel]} replace />
-}
-
-function PlaceholderOperacional({ titulo }: { titulo: string }) {
-  return (
-    <main className="mx-auto max-w-5xl p-8">
-      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h1 className="text-xl font-bold text-slate-900">{titulo}</h1>
-      </div>
-    </main>
-  )
 }
 
 export function App() {
@@ -52,7 +44,7 @@ export function App() {
             path="/medico"
             element={
               <RotaProtegida>
-                <PlaceholderOperacional titulo="Cockpit do Médico Veterinário" />
+                <MedicoPage />
               </RotaProtegida>
             }
           />
@@ -60,7 +52,7 @@ export function App() {
             path="/gestao"
             element={
               <RotaProtegida>
-                <PlaceholderOperacional titulo="Dashboard Executivo B2B (BI & ROI)" />
+                <GestaoPage />
               </RotaProtegida>
             }
           />
