@@ -3,6 +3,8 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider, ROTA_POR_PAPEL, useAuth } from './context/AuthContext'
 import { TopBar } from './components/TopBar'
 import { LoginPage } from './pages/LoginPage'
+import { RecepcaoPage } from './pages/RecepcaoPage'
+import { TutorWizardPage } from './pages/TutorWizardPage'
 
 function RotaProtegida({ children }: { children: React.ReactNode }) {
   const { sessao } = useAuth()
@@ -37,11 +39,12 @@ export function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/t/:token" element={<TutorWizardPage />} />
           <Route
             path="/recepcao"
             element={
               <RotaProtegida>
-                <PlaceholderOperacional titulo="Painel Operacional da Recepção" />
+                <RecepcaoPage />
               </RotaProtegida>
             }
           />
