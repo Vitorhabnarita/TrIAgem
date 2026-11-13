@@ -2,8 +2,17 @@ import type { Sessao } from '../types'
 
 const STORAGE_KEY = 'triagem.sessao.v1'
 
+function resolverApiUrl(): string {
+  const envUrl = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '')
+  if (envUrl) return envUrl
+  if (typeof window !== 'undefined' && window.location.hostname) {
+    return `${window.location.protocol}//${window.location.hostname}:8000`
+  }
+  return 'http://localhost:8000'
+}
+
 /** Base da API. Em produção defina VITE_API_URL no build. */
-export const API_URL: string = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') ?? 'http://localhost:8000'
+export const API_URL: string = resolverApiUrl()
 
 export class ApiError extends Error {
   status: number

@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await engine.dispose()   # encerra o pool de conexões graciosamente
 
 
-_producao = settings.ambiente.lower() == "producao"
+_producao = settings.ambiente.lower() in ("producao", "production")
 
 app = FastAPI(
     title=settings.app_name,
@@ -54,6 +54,11 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
+    allow_origin_regex=(
+        None
+        if _producao
+        else r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?$"
+    ),
     allow_credentials=False,   # autenticação por Bearer token, não por cookie
     allow_methods=["*"],
     allow_headers=["*"],
