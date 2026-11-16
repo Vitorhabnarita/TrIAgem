@@ -1,14 +1,13 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AlertOctagon,
   AlertTriangle,
   Ambulance,
+  Check,
   CheckCircle2,
-  CheckSquare,
   ClipboardCheck,
   Clock,
   ExternalLink,
-  FileText,
   HeartPulse,
   MapPin,
   Pill,
@@ -18,71 +17,150 @@ import {
   ShieldCheck,
   Siren,
   Sparkles,
-  Square,
-  StopCircle,
-  Stethoscope,
 } from 'lucide-react'
+import { ManchesterBadge } from '../components/ui'
 import { api } from '../lib/api'
 import {
   classes,
-  descricaoPet,
   formatarCronometro,
   formatarDataHora,
   formatarHora,
   formatarNumero,
   formatarTelefone,
 } from '../lib/format'
-import { MANCHESTER } from '../lib/manchester'
+import { pesoManchester } from '../lib/manchester'
 import type { Briefing, ConsultaFilaItem, ConsultaFinalizada, ConsultaStatus } from '../types'
 
-const CHECKLIST_EXAME_FISICO_PADRAO = [
-  'Coloração de mucosas (róseas, pálidas, ictéricas ou cianóticas)',
-  'Tempo de Preenchimento Capilar (TPC ≤ 2s) e grau de hidratação (turgor cutâneo)',
-  'Ausculta cardiopulmonar (frequência cardíaca, ritmo, sopros e ruídos respiratórios)',
-  'Palpação abdominal (tensão, sensibilidade dolorosa, alças intestinais e repleção vesical)',
-  'Temperatura retal, linfonodos palpáveis e escore de condição corporal (ECC)',
+const EXAME_FISICO = [
+  'Mucosas (coloração) e TPC',
+  'Hidratação (turgor cutâneo)',
+  'Ausculta cardiopulmonar',
+  'Palpação abdominal e vesical',
+  'Temperatura retal',
+  'Linfonodos e escore de condição corporal',
 ]
+
+const AVISO_CFMV =
+  'Relatório Clínico Prévio organizado por IA a partir do relato leigo do tutor. Não constitui diagnóstico, prognóstico nem prescrição e não substitui a avaliação clínica presencial do médico veterinário responsável.'
+
+type Filtro = 'todos' | 'prontos' | 'urgencias'
+
+const aberta = (i: ConsultaFilaItem) => i.status === 'agendada' || i.status === 'em_andamento'
+
+/** Checklist persistente por consulta (riscado suave ao marcar). */
+function useChecklist(chave: string) {
+  const [marcados, setMarcados] = useState<Record<string, boolean>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(chave) ?? '{}') as Record<string, boolean>
+    } catch {
+      return {}
+    }
+  })
+  useEffect(() => {
+    try {
+      setMarcados(JSON.parse(localStorage.getItem(chave) ?? '{}') as Record<string, boolean>)
+    } catch {
+      setMarcados({})
+    }
+  }, [chave])
+  const alternar = (id: string) =>
+    setMarcados((prev) => {
+      const novo = { ...prev, [id]: !prev[id] }
+      localStorage.setItem(chave, JSON.stringify(novo))
+      return novo
+    })
+  return { marcados, alternar }
+}
+
+function Checklist({
+  titulo,
+  itens,
+  prefixo,
+  marcados,
+  alternar,
+}: {
+  titulo: string
+  itens: string[]
+  prefixo: string
+  marcados: Record<string, boolean>
+  alternar: (id: string) => void
+}) {
+  const feitos = itens.filter((_, i) => marcados[`${prefixo}${i}`]).length
+  return (
+    <div className="card p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="flex items-center gap-2 text-sm font-bold text-ink">
+          <ClipboardCheck className="h-4 w-4 text-brand" />
+          {titulo}
+        </h3>
+        <span className="text-xs font-medium text-ink-soft">{feitos}/{itens.length}</span>
+      </div>
+      <ul className="space-y-1.5">
+        {itens.map((item, i) => {
+          const id = `${prefixo}${i}`
+          const ok = Boolean(marcados[id])
+          return (
+            <li key={id}>
+              <button
+                type="button"
+                onClick={() => alternar(id)}
+                aria-pressed={ok}
+                className="flex w-full cursor-pointer items-start gap-3 rounded-xl px-2.5 py-2 text-left transition hover:bg-slate-50"
+              >
+                <span className={classes('mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition', ok ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-slate-300 text-transparent')}>
+                  <Check className="h-3 w-3" strokeWidth={3} />
+                </span>
+                <span className={classes('text-sm leading-snug transition', ok ? 'text-slate-400 line-through decoration-slate-300' : 'text-slate-700')}>
+                  {item}
+                </span>
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+function Chip({ ok, children }: { ok: boolean | null; children: React.ReactNode }) {
+  const cor = ok === null ? 'bg-slate-100 text-slate-700 ring-slate-200' : ok ? 'bg-emerald-50 text-emerald-800 ring-emerald-200' : 'bg-amber-50 text-amber-800 ring-amber-200'
+  return <span className={classes('inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-inset', cor)}>{children}</span>
+}
 
 export function MedicoPage() {
   const [fila, setFila] = useState<ConsultaFilaItem[]>([])
+  const [filtro, setFiltro] = useState<Filtro>('todos')
   const [idSelecionada, setIdSelecionada] = useState<number | null>(null)
   const [briefing, setBriefing] = useState<Briefing | null>(null)
   const [carregandoFila, setCarregandoFila] = useState(true)
   const [carregandoBriefing, setCarregandoBriefing] = useState(false)
   const [erro, setErro] = useState<string | null>(null)
-  const [acaoCronometro, setAcaoCronometro] = useState(false)
-  const [resumoFinalizacao, setResumoFinalizacao] = useState<ConsultaFinalizada | null>(null)
-  const [reprocessandoIA, setReprocessandoIA] = useState(false)
+  const [acao, setAcao] = useState(false)
+  const [resumo, setResumo] = useState<ConsultaFinalizada | null>(null)
+  const [reprocessando, setReprocessando] = useState(false)
+  const [segundos, setSegundos] = useState(0)
 
-  // Cronômetro ao vivo (segundos desde inicio_consulta UTC)
-  const [segundosDecorridos, setSegundosDecorridos] = useState<number>(0)
-
-  // Checklist clicável de Exame Físico Presencial (escopado por id_consulta)
-  const [exameMarcado, setExameMarcado] = useState<Record<string, boolean>>({})
+  const { marcados, alternar } = useChecklist(`triagem.checklist.${idSelecionada ?? 0}`)
 
   const carregarFila = useCallback(async () => {
     try {
       const lista = await api<ConsultaFilaItem[]>('/consultas/fila')
       setFila(lista)
-      setIdSelecionada((atual) => {
-        if (atual && lista.some((i) => i.id_consulta === atual)) return atual
-        return lista[0]?.id_consulta ?? null
-      })
-    } catch (err) {
-      setErro((err as Error).message)
+      setIdSelecionada((atual) => (atual && lista.some((i) => i.id_consulta === atual) ? atual : (lista[0]?.id_consulta ?? null)))
+    } catch (e) {
+      setErro((e as Error).message)
     } finally {
       setCarregandoFila(false)
     }
   }, [])
 
-  const carregarBriefing = useCallback(async (idConsulta: number, silencioso = false) => {
+  const carregarBriefing = useCallback(async (id: number, silencioso = false) => {
     if (!silencioso) setCarregandoBriefing(true)
     setErro(null)
     try {
-      const b = await api<Briefing>(`/triagem/${idConsulta}/briefing`)
-      setBriefing(b)
-    } catch (err) {
-      setErro((err as Error).message)
+      setBriefing(await api<Briefing>(`/triagem/${id}/briefing`))
+    } catch (e) {
+      setErro((e as Error).message)
     } finally {
       if (!silencioso) setCarregandoBriefing(false)
     }
@@ -90,409 +168,273 @@ export function MedicoPage() {
 
   useEffect(() => {
     carregarFila()
-    const timer = window.setInterval(carregarFila, 8000)
-    return () => window.clearInterval(timer)
+    const t = window.setInterval(carregarFila, 8000)
+    return () => window.clearInterval(t)
   }, [carregarFila])
 
   useEffect(() => {
     if (idSelecionada) {
-      setResumoFinalizacao(null)
+      setResumo(null)
       carregarBriefing(idSelecionada)
-    } else {
-      setBriefing(null)
-    }
+    } else setBriefing(null)
   }, [idSelecionada, carregarBriefing])
 
-  // Atualiza cronômetro UTC a cada segundo quando em_andamento
+  // Cronômetro UTC
   useEffect(() => {
-    if (!briefing || !briefing.inicio_consulta) {
-      setSegundosDecorridos(0)
+    if (!briefing?.inicio_consulta) {
+      setSegundos(0)
       return
     }
-    const iniMs = new Date(briefing.inicio_consulta).getTime()
+    const ini = new Date(briefing.inicio_consulta).getTime()
     if (briefing.status === 'finalizada' && briefing.fim_consulta) {
-      const fimMs = new Date(briefing.fim_consulta).getTime()
-      setSegundosDecorridos(Math.max(0, Math.floor((fimMs - iniMs) / 1000)))
+      setSegundos(Math.max(0, Math.floor((new Date(briefing.fim_consulta).getTime() - ini) / 1000)))
       return
     }
-    const tick = () => {
-      setSegundosDecorridos(Math.max(0, Math.floor((Date.now() - iniMs) / 1000)))
-    }
+    const tick = () => setSegundos(Math.max(0, Math.floor((Date.now() - ini) / 1000)))
     tick()
     const id = window.setInterval(tick, 1000)
     return () => window.clearInterval(id)
   }, [briefing])
 
-  async function handleIniciarConsulta() {
+  const filaOrdenada = useMemo(() => {
+    const peso = (i: ConsultaFilaItem) => (i.cor_prioridade ? pesoManchester(i.cor_prioridade) : i.urgencia ? 0 : 5)
+    return [...fila]
+      .filter((i) => (filtro === 'urgencias' ? aberta(i) && i.urgencia : filtro === 'prontos' ? aberta(i) && i.status_triagem !== 'pendente' : true))
+      .sort((a, b) => {
+        if (aberta(a) !== aberta(b)) return aberta(a) ? -1 : 1
+        if (Boolean(a.modalidade_emergencia) !== Boolean(b.modalidade_emergencia)) return a.modalidade_emergencia ? -1 : 1
+        return peso(a) - peso(b)
+      })
+  }, [fila, filtro])
+
+  async function iniciar() {
     if (!briefing) return
-    setAcaoCronometro(true)
+    setAcao(true)
     setErro(null)
     try {
-      await api<ConsultaStatus>(`/consultas/${briefing.id_consulta}/iniciar`, {
-        method: 'PATCH',
-      })
+      await api<ConsultaStatus>(`/consultas/${briefing.id_consulta}/iniciar`, { method: 'PATCH' })
       await Promise.all([carregarFila(), carregarBriefing(briefing.id_consulta, true)])
-    } catch (err) {
-      setErro((err as Error).message)
+    } catch (e) {
+      setErro((e as Error).message)
     } finally {
-      setAcaoCronometro(false)
+      setAcao(false)
     }
   }
 
-  async function handleFinalizarConsulta() {
+  async function finalizar() {
     if (!briefing) return
-    setAcaoCronometro(true)
+    setAcao(true)
     setErro(null)
     try {
-      const res = await api<ConsultaFinalizada>(`/consultas/${briefing.id_consulta}/finalizar`, {
-        method: 'PATCH',
-      })
-      setResumoFinalizacao(res)
+      setResumo(await api<ConsultaFinalizada>(`/consultas/${briefing.id_consulta}/finalizar`, { method: 'PATCH' }))
       await Promise.all([carregarFila(), carregarBriefing(briefing.id_consulta, true)])
-    } catch (err) {
-      setErro((err as Error).message)
+    } catch (e) {
+      setErro((e as Error).message)
     } finally {
-      setAcaoCronometro(false)
+      setAcao(false)
     }
   }
 
-  async function handleReprocessarIA() {
+  async function reprocessar() {
     if (!briefing) return
-    setReprocessandoIA(true)
-    setErro(null)
+    setReprocessando(true)
     try {
       await api(`/triagem/${briefing.id_consulta}/reprocessar-ia`, { method: 'POST' })
       window.setTimeout(() => {
         carregarBriefing(briefing.id_consulta, true)
         carregarFila()
       }, 2000)
-    } catch (err) {
-      setErro((err as Error).message)
+    } catch (e) {
+      setErro((e as Error).message)
     } finally {
-      setReprocessandoIA(false)
+      setReprocessando(false)
     }
   }
 
-  function alternarItemExame(idx: number) {
-    if (!briefing) return
-    const chave = `${briefing.id_consulta}:${idx}`
-    setExameMarcado((prev) => ({ ...prev, [chave]: !prev[chave] }))
-  }
-
-  const benchmarkMin = briefing?.benchmark_minutos ?? 30
-  const minutosAtuais = segundosDecorridos / 60
-  const minutosEconomizadosAoVivo = Math.max(0, benchmarkMin - minutosAtuais)
-  const manchesterAtual = briefing?.relatorio?.cor_prioridade
-    ? MANCHESTER[briefing.relatorio.cor_prioridade]
-    : briefing?.urgencia
-      ? MANCHESTER.VERMELHO
-      : null
+  const bench = briefing?.benchmark_minutos ?? 30
+  const economia = Math.max(0, bench - segundos / 60)
+  const rel = briefing?.relatorio ?? null
+  const form = briefing?.formulario ?? null
+  const acessoRua = form?.manejo_preventivo?.match(/Acesso à rua: ([^·]+)/)?.[1]?.trim()
 
   return (
-    <main className="mx-auto max-w-7xl px-4 py-6 pb-20">
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* =====================================================================
-            COLUNA LATERAL ESQUERDA: FILA PRIORIZADA MANCHESTER (VERMELHO NO TOPO)
-           ===================================================================== */}
-        <aside className="lg:col-span-4 rounded-3xl border border-slate-200 bg-white p-4 shadow-sm space-y-3">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-            <div className="flex items-center gap-2">
-              <Stethoscope className="h-5 w-5 text-teal-600" />
-              <div>
-                <h1 className="text-sm font-extrabold text-slate-900">
-                  Fila Priorizada Manchester
-                </h1>
-                <p className="text-[11px] text-slate-500">
-                  Emergências RN-001 sempre no topo
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={carregarFila}
-              className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:bg-slate-50 cursor-pointer"
-              title="Atualizar fila"
-            >
+    <main className="mx-auto max-w-7xl px-4 py-6 pb-24">
+      <div className="grid items-start gap-6 lg:grid-cols-12">
+        {/* ============ Sidebar compacta ============ */}
+        <aside className="card p-3 lg:sticky lg:top-20 lg:col-span-4">
+          <div className="flex items-center justify-between px-2 pb-3 pt-1">
+            <h1 className="text-sm font-bold text-ink">Pacientes de hoje</h1>
+            <button type="button" onClick={carregarFila} title="Atualizar" aria-label="Atualizar" className="cursor-pointer rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-50 hover:text-brand">
               <RefreshCw className="h-4 w-4" />
             </button>
           </div>
+          <div className="mb-3 flex rounded-xl bg-slate-100 p-1">
+            {(['todos', 'prontos', 'urgencias'] as Filtro[]).map((f) => (
+              <button key={f} type="button" onClick={() => setFiltro(f)} className={classes('flex-1 cursor-pointer rounded-lg py-1.5 text-xs font-semibold capitalize transition', filtro === f ? 'bg-white text-ink shadow-sm' : 'text-ink-soft hover:text-ink')}>
+                {f === 'urgencias' ? 'Urgências' : f === 'prontos' ? 'Prontos' : 'Todos'}
+              </button>
+            ))}
+          </div>
 
           {carregandoFila ? (
-            <div className="p-6 text-center text-xs text-slate-500">Carregando fila clínica...</div>
-          ) : fila.length === 0 ? (
-            <div className="p-6 text-center text-xs text-slate-500">
-              Nenhum paciente na fila para este médico.
-            </div>
+            <p className="p-6 text-center text-sm text-ink-soft">Carregando…</p>
+          ) : filaOrdenada.length === 0 ? (
+            <p className="p-6 text-center text-sm text-ink-soft">Nenhum paciente nesta visão.</p>
           ) : (
-            <div className="space-y-2 max-h-[72vh] overflow-y-auto pr-1">
-              {fila.map((item) => {
-                const selecionado = item.id_consulta === idSelecionada
-                const m = item.cor_prioridade
-                  ? MANCHESTER[item.cor_prioridade]
-                  : item.urgencia
-                    ? MANCHESTER.VERMELHO
-                    : null
+            <ul className="max-h-[68vh] space-y-1.5 overflow-y-auto pr-0.5">
+              {filaOrdenada.map((i) => {
+                const sel = i.id_consulta === idSelecionada
                 return (
-                  <button
-                    key={item.id_consulta}
-                    type="button"
-                    onClick={() => setIdSelecionada(item.id_consulta)}
-                    className={classes(
-                      'w-full text-left rounded-2xl border p-3.5 transition cursor-pointer',
-                      selecionado
-                        ? 'border-teal-600 bg-teal-50/70 ring-2 ring-teal-500/30 shadow-sm'
-                        : item.urgencia && item.status !== 'finalizada'
-                          ? 'border-red-300 bg-red-50/40 hover:bg-red-50/70'
-                          : 'border-slate-200 bg-white hover:bg-slate-50',
-                    )}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-sm font-extrabold text-slate-900">
-                            {item.pet_nome}
-                          </span>
-                          <span className="text-xs text-slate-500">
-                            ({item.especie} · {item.pet_raca})
-                          </span>
-                        </div>
-                        <div className="text-[11px] text-slate-500">
-                          Tutor: {item.tutor_nome} · {formatarHora(item.agendada_para)}
-                        </div>
+                  <li key={i.id_consulta}>
+                    <button
+                      type="button"
+                      onClick={() => setIdSelecionada(i.id_consulta)}
+                      className={classes(
+                        'relative w-full cursor-pointer rounded-xl py-3 pl-4 pr-3 text-left transition',
+                        sel ? 'bg-brand-soft' : 'hover:bg-slate-50',
+                        !aberta(i) && 'opacity-60',
+                      )}
+                    >
+                      {sel && <span className="bg-brand-gradient absolute inset-y-2 left-0 w-1 rounded-full" />}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="truncate text-sm font-bold text-ink">{i.pet_nome}</span>
+                        <ManchesterBadge cor={i.cor_prioridade ?? (i.urgencia ? 'VERMELHO' : null)} />
                       </div>
-                      {m ? (
-                        <span
-                          className={classes(
-                            'shrink-0 rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase',
-                            m.fundo,
-                          )}
-                        >
-                          {m.cor}
-                        </span>
-                      ) : (
-                        <span className="shrink-0 rounded-full bg-slate-200 text-slate-700 px-2 py-0.5 text-[10px] font-bold">
-                          Sem Triagem
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                      {item.modalidade_emergencia === 'RESGATE_SOLICITADO' && (
-                        <span className="inline-flex items-center gap-1 rounded-md bg-amber-400 text-slate-950 px-2 py-0.5 text-[10px] font-extrabold">
-                          <Ambulance className="h-3 w-3" />
-                          RESGATE GPS
-                        </span>
-                      )}
-                      {item.modalidade_emergencia === 'EMERGENCIA_A_CAMINHO' && (
-                        <span className="inline-flex items-center gap-1 rounded-md bg-red-600 text-white px-2 py-0.5 text-[10px] font-extrabold">
-                          <Siren className="h-3 w-3" />A CAMINHO
-                        </span>
-                      )}
-                      <span
-                        className={classes(
-                          'rounded-md px-2 py-0.5 text-[10px] font-bold uppercase',
-                          item.status === 'em_andamento'
-                            ? 'bg-teal-600 text-white'
-                            : item.status === 'finalizada'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-slate-100 text-slate-700',
+                      <div className="mt-0.5 flex items-center justify-between gap-2 text-xs text-ink-soft">
+                        <span className="truncate">{i.especie} · {i.pet_raca}</span>
+                        <span className="shrink-0">{formatarHora(i.agendada_para)}</span>
+                      </div>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+                        {i.modalidade_emergencia && (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-red-600 px-1.5 py-0.5 font-bold text-white">
+                            {i.modalidade_emergencia === 'RESGATE_SOLICITADO' ? <Ambulance className="h-3 w-3" /> : <Siren className="h-3 w-3" />}
+                            {i.modalidade_emergencia === 'RESGATE_SOLICITADO' ? 'Resgate' : 'A caminho'}
+                          </span>
                         )}
-                      >
-                        {item.status.replace('_', ' ')}
-                      </span>
-                      {item.duracao_minutos != null && (
-                        <span className="text-[10px] font-semibold text-emerald-700">
-                          {formatarNumero(item.duracao_minutos, 1)} min (eco:{' '}
-                          {formatarNumero(item.minutos_economizados ?? 0, 1)}m)
-                        </span>
-                      )}
-                    </div>
-                  </button>
+                        {i.status === 'em_andamento' && <span className="font-semibold text-brand">em consulta</span>}
+                        {i.status === 'finalizada' && <span className="font-semibold text-emerald-600">finalizada</span>}
+                        {i.status === 'cancelada' && <span className="font-semibold text-slate-500">cancelada</span>}
+                        {i.status === 'agendada' && i.status_triagem === 'pendente' && <span className="text-slate-500">aguardando triagem</span>}
+                      </div>
+                    </button>
+                  </li>
                 )
               })}
-            </div>
+            </ul>
           )}
         </aside>
 
-        {/* =====================================================================
-            COLUNA PRINCIPAL DIREITA: COCKPIT DO MÉDICO VETERINÁRIO
-           ===================================================================== */}
-        <section className="lg:col-span-8 space-y-5">
+        {/* ============ Cockpit ============ */}
+        <section className="space-y-5 lg:col-span-8">
           {erro && (
-            <div className="rounded-2xl border border-red-300 bg-red-50 p-4 text-xs font-semibold text-red-800 flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
-              <span>{erro}</span>
+            <div className="flex items-center gap-2 rounded-xl bg-red-50 p-3.5 text-sm text-red-700 ring-1 ring-red-200">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              {erro}
             </div>
           )}
 
           {carregandoBriefing || !briefing ? (
-            <div className="rounded-3xl border border-slate-200 bg-white p-12 text-center text-sm text-slate-500">
-              {carregandoBriefing
-                ? 'Carregando Briefing Clínico Prévio...'
-                : 'Selecione um paciente na fila ao lado para abrir o Cockpit Clínico.'}
+            <div className="card p-12 text-center text-sm text-ink-soft">
+              {carregandoBriefing ? 'Abrindo briefing clínico…' : 'Selecione um paciente na lista.'}
             </div>
           ) : (
             <>
-              {/* CABEÇALHO DO PACIENTE + CRONÔMETRO OPERACIONAL UTC (RN-004) */}
-              <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="text-xl font-extrabold text-slate-900">
-                        {briefing.pet.nome}
-                      </h2>
-                      <span className="rounded-lg bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-700">
-                        {descricaoPet(briefing.pet)} · {briefing.pet.sexo} ·{' '}
-                        {briefing.pet.idade_texto}
-                      </span>
-                      {manchesterAtual && (
-                        <span
-                          className={classes(
-                            'rounded-full px-3 py-0.5 text-xs font-extrabold uppercase tracking-wider',
-                            manchesterAtual.fundo,
-                          )}
-                        >
-                          {manchesterAtual.cor} · {manchesterAtual.rotulo}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-slate-600">
-                      Tutor: <strong>{briefing.tutor.nome}</strong> (
-                      {formatarTelefone(briefing.tutor.telefone)}) · Veterinário responsável:{' '}
-                      <strong>{briefing.medico.nome}</strong>
-                    </p>
+              {/* Header do paciente + cronômetro */}
+              <div className="card sticky top-16 z-20 flex flex-col gap-4 p-5 md:flex-row md:items-center md:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-xl font-extrabold tracking-tight text-ink">{briefing.pet.nome}</h2>
+                    <ManchesterBadge cor={rel?.cor_prioridade ?? (briefing.urgencia ? 'VERMELHO' : null)} />
                   </div>
-
-                  {/* Painel do Cronômetro Operacional UTC */}
-                  <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-slate-900 text-white p-3.5">
-                    <div className="flex items-center gap-2">
-                      <Clock className="h-5 w-5 text-teal-400" />
-                      <div>
-                        <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                          Cronômetro UTC (Benchmark {benchmarkMin}m)
-                        </div>
-                        <div className="flex items-baseline gap-2">
-                          <span className="font-mono text-lg font-extrabold text-white">
-                            {formatarCronometro(segundosDecorridos)}
-                          </span>
-                          {briefing.inicio_consulta && briefing.triagem_preenchida && (
-                            <span className="text-[11px] font-bold text-emerald-400">
-                              Economia: ~{formatarNumero(minutosEconomizadosAoVivo, 1)} min
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {briefing.status === 'agendada' && (
-                      <button
-                        type="button"
-                        disabled={acaoCronometro}
-                        onClick={handleIniciarConsulta}
-                        className="inline-flex items-center gap-1.5 rounded-xl bg-teal-500 hover:bg-teal-400 disabled:opacity-50 px-4 py-2 text-xs font-extrabold text-slate-950 shadow cursor-pointer"
-                      >
-                        <Play className="h-4 w-4" />
-                        <span>Iniciar Consulta</span>
-                      </button>
-                    )}
-
-                    {briefing.status === 'em_andamento' && (
-                      <button
-                        type="button"
-                        disabled={acaoCronometro}
-                        onClick={handleFinalizarConsulta}
-                        className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 px-4 py-2 text-xs font-extrabold text-slate-950 shadow cursor-pointer"
-                      >
-                        <StopCircle className="h-4 w-4" />
-                        <span>Finalizar Consulta</span>
-                      </button>
-                    )}
-
-                    {briefing.status === 'finalizada' && (
-                      <span className="inline-flex items-center gap-1 rounded-xl bg-emerald-500/20 border border-emerald-400/40 px-3 py-1.5 text-xs font-bold text-emerald-300">
-                        <CheckCircle2 className="h-4 w-4" />
-                        Finalizada
-                      </span>
-                    )}
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <Chip ok={null}>{briefing.pet.especie} · {briefing.pet.raca}</Chip>
+                    <Chip ok={null}>{briefing.pet.sexo} · {briefing.pet.idade_texto}</Chip>
+                    {briefing.pet.peso_kg != null && <Chip ok={null}>{formatarNumero(briefing.pet.peso_kg, 2)} kg</Chip>}
+                    {briefing.pet.porte && <Chip ok={null}>Porte {briefing.pet.porte.toLowerCase()}</Chip>}
+                    {briefing.pet.status_reprodutivo && <Chip ok={null}>{briefing.pet.status_reprodutivo}</Chip>}
                   </div>
+                  <p className="mt-2 text-xs text-ink-soft">
+                    Tutor {briefing.tutor.nome} · {formatarTelefone(briefing.tutor.telefone)}
+                  </p>
                 </div>
 
-                {resumoFinalizacao && (
-                  <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-3.5 text-xs text-emerald-950 flex items-center justify-between gap-2">
-                    <span className="font-bold">{resumoFinalizacao.mensagem}</span>
-                    <span className="rounded-lg bg-emerald-600 text-white px-2.5 py-1 font-extrabold">
-                      +{formatarNumero(resumoFinalizacao.minutos_economizados, 1)} min no ROI
-                    </span>
-                  </div>
-                )}
-              </div>
-
-              {/* =====================================================================
-                  ALERTA DE EMERGÊNCIA / DESLOCAMENTO / RESGATE + PROTOCOLO ANTI-ANCORAGEM (ABC)
-                 ===================================================================== */}
-              {(briefing.urgencia || briefing.modalidade_emergencia) && (
-                <div className="rounded-3xl border-2 border-red-600 bg-gradient-to-br from-red-950 via-slate-950 to-slate-900 text-white p-5 shadow-xl space-y-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="flex items-start gap-3">
-                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-red-600 text-white shadow">
-                        <Siren className="h-6 w-6" />
-                      </div>
-                      <div>
-                        <span className="inline-block rounded-full bg-red-500/30 border border-red-400/40 px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wider text-red-200">
-                          Alerta de Emergência RN-001 v2.0
-                        </span>
-                        <h3 className="mt-1 text-base font-extrabold">
-                          {briefing.modalidade_emergencia === 'RESGATE_SOLICITADO'
-                            ? '🚑 Veículo de Resgate Acionado pelo Tutor (GPS Registrado)'
-                            : briefing.modalidade_emergencia === 'EMERGENCIA_A_CAMINHO'
-                              ? '🚨 Paciente Crítico em Deslocamento — Preparar Box de Emergência e Oxigênio'
-                              : '⚠️ Sinais Críticos de Emergência Identificados na Pré-Triagem'}
-                        </h3>
-                        <div className="mt-1 text-xs text-red-200 flex flex-wrap gap-x-4 gap-y-1">
-                          <span>
-                            Ciência jurídica de risco de morte:{' '}
-                            <strong>{briefing.ciente_risco_morte ? 'Confirmada pelo tutor' : 'Não marcada'}</strong>
-                          </span>
-                          {briefing.alerta_critico_exibido_em && (
-                            <span>
-                              Alerta exibido em: {formatarDataHora(briefing.alerta_critico_exibido_em)}
-                            </span>
-                          )}
-                        </div>
+                <div className="flex shrink-0 items-center gap-4 rounded-2xl bg-slate-50 p-3 pr-4 ring-1 ring-slate-200">
+                  <div className="flex items-center gap-2.5">
+                    <Clock className="h-5 w-5 text-brand" />
+                    <div className="leading-tight">
+                      <div className="font-mono text-2xl font-extrabold tabular-nums text-ink">{formatarCronometro(segundos)}</div>
+                      <div className="text-[11px] text-ink-soft">
+                        {briefing.inicio_consulta && briefing.triagem_preenchida
+                          ? `economia ~${formatarNumero(economia, 1)} min`
+                          : `UTC · benchmark ${bench} min`}
                       </div>
                     </div>
+                  </div>
+                  {briefing.status === 'agendada' && (
+                    <button type="button" disabled={acao} onClick={iniciar} className="btn-primary">
+                      <Play className="h-4 w-4" />
+                      Iniciar
+                    </button>
+                  )}
+                  {briefing.status === 'em_andamento' && (
+                    <button type="button" disabled={acao} onClick={finalizar} className="btn-success">
+                      <CheckCircle2 className="h-4 w-4" />
+                      Finalizar
+                    </button>
+                  )}
+                  {briefing.status === 'finalizada' && (
+                    <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-emerald-600">
+                      <CheckCircle2 className="h-4 w-4" />
+                      Finalizada
+                    </span>
+                  )}
+                </div>
+              </div>
 
+              {resumo && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-900 ring-1 ring-emerald-200">
+                  <span className="font-semibold">{resumo.mensagem}</span>
+                  <span className="rounded-full bg-emerald-600 px-3 py-1 text-xs font-bold text-white">+{formatarNumero(resumo.minutos_economizados, 1)} min no ROI</span>
+                </div>
+              )}
+
+              {/* Emergência + ABC */}
+              {(briefing.urgencia || briefing.modalidade_emergencia) && (
+                <div className="space-y-4 rounded-2xl bg-red-600 p-5 text-white shadow-lg">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      <Siren className="mt-0.5 h-6 w-6 shrink-0" />
+                      <div>
+                        <h3 className="text-base font-extrabold leading-tight">
+                          {briefing.modalidade_emergencia === 'RESGATE_SOLICITADO'
+                            ? 'Resgate acionado pelo tutor — GPS registrado'
+                            : briefing.modalidade_emergencia === 'EMERGENCIA_A_CAMINHO'
+                              ? 'Paciente crítico a caminho — prepare o Box de Emergência'
+                              : 'Sinais críticos identificados na triagem'}
+                        </h3>
+                        <p className="mt-1 text-xs text-red-100">
+                          Ciência de risco: <strong>{briefing.ciente_risco_morte ? 'confirmada' : 'não marcada'}</strong>
+                          {briefing.alerta_critico_exibido_em && ` · alerta exibido ${formatarDataHora(briefing.alerta_critico_exibido_em)}`}
+                        </p>
+                      </div>
+                    </div>
                     {briefing.maps_url_tutor && (
-                      <a
-                        href={briefing.maps_url_tutor}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 px-3.5 py-2 text-xs font-extrabold shadow"
-                      >
+                      <a href={briefing.maps_url_tutor} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-xl bg-white px-3.5 py-2 text-xs font-bold text-red-700 transition hover:bg-red-50">
                         <MapPin className="h-4 w-4" />
-                        <span>Ver Localização GPS ({briefing.localizacao_gps_tutor})</span>
-                        <ExternalLink className="h-3.5 w-3.5" />
+                        Ver localização
+                        <ExternalLink className="h-3 w-3" />
                       </a>
                     )}
                   </div>
-
-                  {/* Protocolo de Descarte Diferencial Anti-Ancoragem (ABC de Emergência) */}
                   {briefing.protocolo_abc_emergencia.length > 0 && (
-                    <div className="rounded-2xl border border-red-400/30 bg-slate-900/90 p-4 space-y-2">
-                      <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-amber-300">
-                        <HeartPulse className="h-4 w-4 text-amber-400" />
-                        <span>
-                          Protocolo de Descarte Diferencial Anti-Ancoragem · Exame ABC de Emergência
-                        </span>
+                    <div className="rounded-xl bg-white/10 p-4">
+                      <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wider">
+                        <HeartPulse className="h-4 w-4" />
+                        Protocolo anti-ancoragem · Exame ABC
                       </div>
-                      <ul className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-slate-100">
-                        {briefing.protocolo_abc_emergencia.map((item, idx) => (
-                          <li
-                            key={idx}
-                            className="rounded-xl border border-slate-800 bg-slate-950/70 p-2.5 leading-snug"
-                          >
-                            {item}
-                          </li>
+                      <ul className="grid gap-1.5 text-sm md:grid-cols-2">
+                        {briefing.protocolo_abc_emergencia.map((p, i) => (
+                          <li key={i} className="rounded-lg bg-white/10 px-3 py-2 leading-snug">{p}</li>
                         ))}
                       </ul>
                     </div>
@@ -500,169 +442,89 @@ export function MedicoPage() {
                 </div>
               )}
 
-              {/* Sem Triagem Preenchida */}
-              {!briefing.triagem_preenchida || !briefing.formulario ? (
-                <div className="rounded-3xl border border-amber-300 bg-amber-50 p-6 text-center space-y-2">
-                  <AlertOctagon className="h-8 w-8 text-amber-600 mx-auto" />
-                  <h3 className="text-sm font-extrabold text-amber-950">
-                    O tutor ainda não enviou o formulário completo da Triagem Pré-Consulta
-                  </h3>
-                  <p className="text-xs text-amber-800">
-                    Você ainda pode iniciar o cronômetro da consulta ou aguardar o preenchimento pelo
-                    link enviado no WhatsApp.
-                  </p>
+              {!briefing.triagem_preenchida || !form ? (
+                <div className="card space-y-2 p-8 text-center">
+                  <AlertOctagon className="mx-auto h-8 w-8 text-amber-500" />
+                  <h3 className="text-sm font-bold text-ink">O tutor ainda não enviou a triagem</h3>
+                  <p className="text-sm text-ink-soft">Você pode iniciar a consulta normalmente ou aguardar o preenchimento.</p>
                 </div>
               ) : (
                 <>
-                  {/* CARD DE SEGURANÇA FARMACOLÓGICA (48H), BIOINDICADORES E MANEJO PREVENTIVO */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="rounded-3xl border-2 border-amber-300 bg-amber-50/70 p-4 space-y-2">
-                      <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-amber-900">
-                        <Pill className="h-4 w-4 text-amber-700" />
-                        <span>Segurança Farmacológica (Últimas 48h) &amp; Bioindicadores</span>
-                      </div>
-                      <div className="rounded-xl bg-white border border-amber-200 p-3 text-xs space-y-1">
-                        <div className="font-bold text-slate-900">
-                          Medicação informada: {briefing.formulario.medicamento_continuo}
-                        </div>
-                        <div className="text-slate-600">
-                          Urina/Fezes: {briefing.formulario.aspecto_urina_fezes}
-                        </div>
-                        <div className="text-slate-600">
-                          Apetite/Peso: {briefing.formulario.alteracao_peso_apetite}
-                        </div>
-                        <div className="text-slate-600">
-                          Ingestão hídrica: {briefing.formulario.ingestao_hidrica}
-                        </div>
-                      </div>
-                      {briefing.relatorio?.alerta_medicacao_e_bioindicadores && (
-                        <p className="text-xs text-amber-950 font-medium leading-relaxed">
-                          {briefing.relatorio.alerta_medicacao_e_bioindicadores}
-                        </p>
+                  {/* 1 · Segurança primeiro */}
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-5">
+                      <h3 className="mb-2 flex items-center gap-2 text-sm font-bold text-amber-900">
+                        <Pill className="h-4 w-4" />
+                        Segurança farmacológica · 48h
+                      </h3>
+                      <p className="text-sm font-semibold text-ink">{form.medicamento_continuo}</p>
+                      {rel?.alerta_medicacao_e_bioindicadores && (
+                        <p className="mt-2 text-xs leading-relaxed text-amber-900/80">{rel.alerta_medicacao_e_bioindicadores}</p>
                       )}
+                      <dl className="mt-3 grid grid-cols-1 gap-1 text-xs text-ink-soft">
+                        <div><dt className="inline font-semibold">Urina/fezes:</dt> <dd className="inline">{form.aspecto_urina_fezes}</dd></div>
+                        <div><dt className="inline font-semibold">Apetite/peso:</dt> <dd className="inline">{form.alteracao_peso_apetite}</dd></div>
+                        <div><dt className="inline font-semibold">Água:</dt> <dd className="inline">{form.ingestao_hidrica}</dd></div>
+                      </dl>
                     </div>
 
-                    <div className="rounded-3xl border border-slate-200 bg-white p-4 space-y-2 shadow-sm">
-                      <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-teal-800">
-                        <ShieldCheck className="h-4 w-4 text-teal-600" />
-                        <span>Manejo Preventivo &amp; Ambiente</span>
+                    <div className="card p-5">
+                      <h3 className="mb-3 flex items-center gap-2 text-sm font-bold text-ink">
+                        <ShieldCheck className="h-4 w-4 text-brand" />
+                        Manejo preventivo
+                      </h3>
+                      <div className="flex flex-wrap gap-1.5">
+                        <Chip ok={form.vacinacao_em_dia}>Vacinas {form.vacinacao_em_dia ? 'em dia' : 'pendentes'}</Chip>
+                        <Chip ok={form.vermifugo_em_dia}>Vermífugo {form.vermifugo_em_dia ? 'em dia' : 'atrasado'}</Chip>
+                        {acessoRua && <Chip ok={null}>{acessoRua}</Chip>}
+                        <Chip ok={null}>{form.convivio_outros_animais ? 'Convive com outros animais' : 'Sem contactantes'}</Chip>
                       </div>
-                      <div className="text-xs text-slate-700 space-y-1.5">
-                        <div className="flex flex-wrap gap-1.5">
-                          <span
-                            className={classes(
-                              'rounded-md px-2 py-0.5 text-[11px] font-bold',
-                              briefing.formulario.vacinacao_em_dia
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : 'bg-red-100 text-red-800',
-                            )}
-                          >
-                            Vacinação: {briefing.formulario.vacinacao_em_dia ? 'Em dia' : 'Atrasada/Incompleta'}
-                          </span>
-                          <span
-                            className={classes(
-                              'rounded-md px-2 py-0.5 text-[11px] font-bold',
-                              briefing.formulario.vermifugo_em_dia
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : 'bg-amber-100 text-amber-800',
-                            )}
-                          >
-                            Vermífugo: {briefing.formulario.vermifugo_em_dia ? 'Em dia' : 'Atrasado'}
-                          </span>
-                          <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
-                            Contactantes: {briefing.formulario.convivio_outros_animais ? 'Sim' : 'Não'}
-                          </span>
-                        </div>
-                        <p>
-                          <strong>Ambiente:</strong> {briefing.formulario.ambiente} ·{' '}
-                          <strong>Alimentação:</strong> {briefing.formulario.alimentacao}
-                        </p>
-                        {briefing.formulario.manejo_preventivo && (
-                          <p className="rounded-xl bg-slate-50 border border-slate-200 p-2.5 text-[11px] text-slate-600 leading-relaxed">
-                            {briefing.formulario.manejo_preventivo}
-                          </p>
-                        )}
-                      </div>
+                      <p className="mt-3 text-xs text-ink-soft">{form.ambiente} · {form.alimentacao}</p>
                     </div>
                   </div>
 
-                  {/* SÍNTESE SEMIOLÓGICA DA IA + BOTÃO REPROCESSAR */}
-                  <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-4">
-                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                      <div className="flex items-center gap-2">
-                        <Sparkles className="h-5 w-5 text-teal-600" />
-                        <div>
-                          <h3 className="text-sm font-extrabold text-slate-900">
-                            Briefing Clínico Prévio · Síntese Semiológica Descritiva
-                          </h3>
-                          <p className="text-[11px] text-slate-500">
-                            Evolução informada: {briefing.formulario.tempo_evolucao} · Modelo:{' '}
-                            {briefing.relatorio?.modelo_utilizado ?? briefing.status_ia ?? 'pendente'}
-                          </p>
-                        </div>
-                      </div>
+                  {rel && rel.sinais_alerta_identificados.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {rel.sinais_alerta_identificados.map((s, i) => (
+                        <span key={i} className="inline-flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-800 ring-1 ring-inset ring-red-200">
+                          <AlertTriangle className="h-3.5 w-3.5" />
+                          {s}
+                        </span>
+                      ))}
+                    </div>
+                  )}
 
-                      <button
-                        type="button"
-                        disabled={reprocessandoIA}
-                        onClick={handleReprocessarIA}
-                        className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 cursor-pointer"
-                      >
-                        <RefreshCw
-                          className={classes('h-3.5 w-3.5', reprocessandoIA && 'animate-spin')}
-                        />
-                        <span>{reprocessandoIA ? 'Reprocessando...' : 'Reprocessar IA'}</span>
+                  {/* 2 · Resumo IA + tradução */}
+                  <div className="card space-y-5 border-ai/30 p-5 ring-1 ring-ai/10">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="flex items-center gap-2 text-sm font-bold text-ai">
+                        <Sparkles className="h-4 w-4" />
+                        Resumo estruturado · TrIAgem IA
+                      </h3>
+                      <button type="button" disabled={reprocessando} onClick={reprocessar} className="btn-ghost px-3 py-1.5 text-xs">
+                        <RefreshCw className={classes('h-3.5 w-3.5', reprocessando && 'animate-spin')} />
+                        {reprocessando ? 'Reprocessando…' : 'Reprocessar'}
                       </button>
                     </div>
 
-                    {briefing.relatorio ? (
+                    {rel ? (
                       <>
-                        <p className="text-sm text-slate-800 leading-relaxed font-medium">
-                          {briefing.relatorio.resumo_estruturado}
-                        </p>
+                        <p className="text-sm leading-relaxed text-ink">{rel.resumo_estruturado}</p>
 
-                        {/* Sinais de Alerta (Red Flags) */}
-                        {briefing.relatorio.sinais_alerta_identificados.length > 0 && (
-                          <div className="flex flex-wrap gap-1.5">
-                            {briefing.relatorio.sinais_alerta_identificados.map((sinal, idx) => (
-                              <span
-                                key={idx}
-                                className="inline-flex items-center gap-1 rounded-lg bg-red-100 border border-red-300 px-2.5 py-1 text-xs font-bold text-red-900"
-                              >
-                                <AlertTriangle className="h-3.5 w-3.5 text-red-600" />
-                                {sinal}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-
-                        {/* TABELA: TRADUÇÃO SEMIOLÓGICA LADO A LADO */}
-                        {briefing.relatorio.traducao_semiologica.length > 0 && (
-                          <div className="overflow-hidden rounded-2xl border border-slate-200">
-                            <div className="bg-slate-900 text-white px-4 py-2 text-xs font-extrabold uppercase tracking-wider flex items-center gap-2">
-                              <FileText className="h-3.5 w-3.5 text-teal-400" />
-                              <span>Tradução Semiológica Lado a Lado (Leigo → Técnico Descritivo)</span>
-                            </div>
-                            <table className="w-full text-left text-xs">
-                              <thead className="bg-slate-100 text-slate-700 border-b border-slate-200">
+                        {rel.traducao_semiologica.length > 0 && (
+                          <div className="overflow-hidden rounded-xl border border-slate-200">
+                            <table className="w-full text-left text-sm">
+                              <thead className="bg-ai-soft text-xs font-semibold uppercase tracking-wide text-ai">
                                 <tr>
-                                  <th className="py-2.5 px-4 font-bold w-1/2">
-                                    Relato Leigo do Tutor (`relato_leigo`)
-                                  </th>
-                                  <th className="py-2.5 px-4 font-bold w-1/2">
-                                    Termo Semiológico Descritivo (`termo_tecnico_descritivo`)
-                                  </th>
+                                  <th className="px-4 py-2.5">O que o tutor relatou</th>
+                                  <th className="px-4 py-2.5">Tradução semiológica</th>
                                 </tr>
                               </thead>
-                              <tbody className="divide-y divide-slate-200">
-                                {briefing.relatorio.traducao_semiologica.map((par, i) => (
-                                  <tr key={i} className="hover:bg-slate-50">
-                                    <td className="py-2.5 px-4 italic text-slate-600">
-                                      &ldquo;{par.relato_leigo}&rdquo;
-                                    </td>
-                                    <td className="py-2.5 px-4 font-bold text-teal-900">
-                                      {par.termo_tecnico_descritivo}
-                                    </td>
+                              <tbody className="divide-y divide-slate-100">
+                                {rel.traducao_semiologica.map((p, i) => (
+                                  <tr key={i}>
+                                    <td className="px-4 py-3 italic text-ink-soft">“{p.relato_leigo}”</td>
+                                    <td className="px-4 py-3 font-semibold text-ink">{p.termo_tecnico_descritivo}</td>
                                   </tr>
                                 ))}
                               </tbody>
@@ -670,114 +532,49 @@ export function MedicoPage() {
                           </div>
                         )}
 
-                        {/* Cronologia e Pontos de Investigação */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-1.5">
-                            <div className="text-xs font-extrabold uppercase tracking-wider text-slate-700">
-                              Cronologia de Evolução
-                            </div>
-                            <p className="text-xs text-slate-700 leading-relaxed">
-                              {briefing.relatorio.cronologia_evolucao}
-                            </p>
-                            <div className="pt-2 border-t border-slate-200 mt-2">
-                              <div className="text-[11px] font-bold text-slate-500">
-                                Relato original do tutor:
-                              </div>
-                              <p className="text-xs italic text-slate-700 mt-0.5">
-                                &ldquo;{briefing.formulario.relato_livre_tutor}&rdquo;
-                              </p>
-                            </div>
+                        <div className="grid gap-4 md:grid-cols-2">
+                          <div>
+                            <h4 className="mb-1 text-xs font-bold uppercase tracking-wide text-ink-soft">Cronologia</h4>
+                            <p className="text-sm leading-relaxed text-slate-700">{rel.cronologia_evolucao}</p>
                           </div>
-
-                          <div className="rounded-2xl border border-teal-200 bg-teal-50/50 p-4 space-y-2">
-                            <div className="text-xs font-extrabold uppercase tracking-wider text-teal-900">
-                              Pontos de Investigação Inicial Presencial
-                            </div>
-                            <ul className="list-disc list-inside space-y-1 text-xs text-teal-950 font-medium">
-                              {briefing.relatorio.pontos_investigacao.map((p, i) => (
-                                <li key={i}>{p}</li>
-                              ))}
-                            </ul>
-                            <p className="pt-1 text-[11px] text-teal-800">
-                              {briefing.relatorio.orientacao_preparatoria_consultorio}
-                            </p>
+                          <div>
+                            <h4 className="mb-1 text-xs font-bold uppercase tracking-wide text-ink-soft">Relato original</h4>
+                            <p className="text-sm italic leading-relaxed text-slate-600">“{form.relato_livre_tutor}”</p>
                           </div>
                         </div>
+                        {rel.orientacao_preparatoria_consultorio && (
+                          <p className="rounded-xl bg-slate-50 p-3 text-xs leading-relaxed text-ink-soft">{rel.orientacao_preparatoria_consultorio}</p>
+                        )}
                       </>
                     ) : (
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600">
-                        <p className="font-bold text-slate-800">
-                          Status do processamento de IA: {briefing.status_ia}
-                        </p>
-                        <p className="mt-1">
-                          Relato bruto do tutor: &ldquo;{briefing.formulario.relato_livre_tutor}
-                          &rdquo;
-                        </p>
+                      <div className="rounded-xl bg-slate-50 p-4 text-sm text-ink-soft">
+                        <p className="font-semibold text-ink">Processamento da IA: {briefing.status_ia}</p>
+                        <p className="mt-1 italic">“{form.relato_livre_tutor}”</p>
                       </div>
                     )}
                   </div>
 
-                  {/* CHECKLIST CLICÁVEL DE EXAME FÍSICO PRESENCIAL */}
-                  <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-3">
-                    <div className="flex items-center gap-2">
-                      <ClipboardCheck className="h-5 w-5 text-teal-600" />
-                      <div>
-                        <h3 className="text-sm font-extrabold text-slate-900">
-                          Checklist Clicável de Exame Físico Presencial (Anti-Ancoragem)
-                        </h3>
-                        <p className="text-[11px] text-slate-500">
-                          Inspeção física obrigatória em consultório para evitar viés de ancoragem
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-2">
-                      {CHECKLIST_EXAME_FISICO_PADRAO.map((item, idx) => {
-                        const chave = `${briefing.id_consulta}:${idx}`
-                        const marcado = Boolean(exameMarcado[chave])
-                        return (
-                          <button
-                            key={idx}
-                            type="button"
-                            onClick={() => alternarItemExame(idx)}
-                            className={classes(
-                              'flex items-center gap-3 rounded-xl border p-3 text-left text-xs transition cursor-pointer',
-                              marcado
-                                ? 'border-emerald-500 bg-emerald-50 text-emerald-950 font-bold'
-                                : 'border-slate-200 bg-slate-50/70 text-slate-800 hover:bg-slate-100',
-                            )}
-                          >
-                            {marcado ? (
-                              <CheckSquare className="h-4 w-4 text-emerald-600 shrink-0" />
-                            ) : (
-                              <Square className="h-4 w-4 text-slate-400 shrink-0" />
-                            )}
-                            <span>{item}</span>
-                          </button>
-                        )
-                      })}
-                    </div>
+                  {/* 3 · Checklists */}
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {rel && rel.pontos_investigacao.length > 0 && (
+                      <Checklist titulo="Pontos de investigação" itens={rel.pontos_investigacao} prefixo="inv" marcados={marcados} alternar={alternar} />
+                    )}
+                    <Checklist titulo="Exame físico presencial" itens={EXAME_FISICO} prefixo="exa" marcados={marcados} alternar={alternar} />
                   </div>
                 </>
               )}
-
-              {/* RODAPÉ FIXO DE GOVERNANÇA ÉTICA CFMV */}
-              <footer className="rounded-2xl border border-slate-300 bg-slate-900 text-slate-200 p-4 flex items-start gap-3 text-xs shadow">
-                <ShieldAlert className="h-5 w-5 text-teal-400 shrink-0 mt-0.5" />
-                <div>
-                  <div className="font-extrabold text-white uppercase tracking-wider text-[11px]">
-                    Declaração de Governança Ética CFMV
-                  </div>
-                  <p className="mt-0.5 text-slate-300 leading-relaxed">
-                    {briefing.relatorio?.aviso_governanca_etica ??
-                      'Este documento é um Relatório Clínico Prévio de Triagem Pré-Consulta, elaborado a partir de relato leigo do tutor e organizado por inteligência artificial. Não constitui diagnóstico, prognóstico nem prescrição, e não substitui a avaliação clínica presencial e o julgamento do médico veterinário responsável.'}
-                  </p>
-                </div>
-              </footer>
             </>
           )}
         </section>
       </div>
+
+      {/* Rodapé ético CFMV (discreto e fixo) */}
+      <footer className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 backdrop-blur">
+        <p className="mx-auto flex max-w-7xl items-center gap-2 px-4 py-2 text-[11px] leading-snug text-ink-soft">
+          <ShieldAlert className="h-3.5 w-3.5 shrink-0 text-ai" />
+          <span><strong className="text-ink">Governança ética CFMV:</strong> {rel?.aviso_governanca_etica ?? AVISO_CFMV}</span>
+        </p>
+      </footer>
     </main>
   )
 }

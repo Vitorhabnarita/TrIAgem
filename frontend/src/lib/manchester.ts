@@ -4,42 +4,43 @@ export interface EstiloManchester {
   cor: CorPrioridade
   rotulo: string
   nivel: string
-  /** Classes Tailwind (literais, para o JIT enxergar). */
-  fundo: string
-  fundoSuave: string
-  borda: string
-  texto: string
-  ponto: string
+  /** Badge pastel de alto contraste (uso geral). */
+  badge: string
+  /** Indicador luminoso discreto. */
+  dot: string
+  /** Barras de gráfico. */
   barra: string
+  /** Faixa lateral de destaque nos itens de lista. */
+  faixa: string
   hex: string
 }
 
-/** Protocolo de Manchester — cores semânticas de risco. */
+/** Protocolo de Manchester — cores harmonizadas (pastel + dot). Sólido vivo só no alarme real. */
 export const MANCHESTER: Record<CorPrioridade, EstiloManchester> = {
   VERMELHO: {
     cor: 'VERMELHO', rotulo: 'Emergência', nivel: 'EMERGENCIA',
-    fundo: 'bg-red-600 text-white', fundoSuave: 'bg-red-50', borda: 'border-red-500',
-    texto: 'text-red-700', ponto: 'bg-red-600', barra: 'bg-red-600', hex: '#dc2626',
+    badge: 'bg-red-50 text-red-800 ring-red-200', dot: 'bg-red-500', barra: 'bg-red-500',
+    faixa: 'border-l-red-500', hex: '#ef4444',
   },
   LARANJA: {
     cor: 'LARANJA', rotulo: 'Muito urgente', nivel: 'MUITO_URGENTE',
-    fundo: 'bg-orange-500 text-white', fundoSuave: 'bg-orange-50', borda: 'border-orange-400',
-    texto: 'text-orange-700', ponto: 'bg-orange-500', barra: 'bg-orange-500', hex: '#f97316',
+    badge: 'bg-orange-50 text-orange-800 ring-orange-200', dot: 'bg-orange-500', barra: 'bg-orange-400',
+    faixa: 'border-l-orange-400', hex: '#fb923c',
   },
   AMARELO: {
     cor: 'AMARELO', rotulo: 'Urgente', nivel: 'URGENTE',
-    fundo: 'bg-yellow-400 text-yellow-950', fundoSuave: 'bg-yellow-50', borda: 'border-yellow-400',
-    texto: 'text-yellow-800', ponto: 'bg-yellow-400', barra: 'bg-yellow-400', hex: '#facc15',
+    badge: 'bg-amber-50 text-amber-800 ring-amber-200', dot: 'bg-amber-400', barra: 'bg-amber-300',
+    faixa: 'border-l-amber-400', hex: '#fcd34d',
   },
   VERDE: {
     cor: 'VERDE', rotulo: 'Pouco urgente', nivel: 'POUCO_URGENTE',
-    fundo: 'bg-green-600 text-white', fundoSuave: 'bg-green-50', borda: 'border-green-500',
-    texto: 'text-green-700', ponto: 'bg-green-600', barra: 'bg-green-600', hex: '#16a34a',
+    badge: 'bg-emerald-50 text-emerald-800 ring-emerald-200', dot: 'bg-emerald-500', barra: 'bg-emerald-400',
+    faixa: 'border-l-emerald-400', hex: '#34d399',
   },
   AZUL: {
     cor: 'AZUL', rotulo: 'Não urgente', nivel: 'NAO_URGENTE',
-    fundo: 'bg-sky-600 text-white', fundoSuave: 'bg-sky-50', borda: 'border-sky-500',
-    texto: 'text-sky-700', ponto: 'bg-sky-600', barra: 'bg-sky-600', hex: '#0284c7',
+    badge: 'bg-sky-50 text-sky-800 ring-sky-200', dot: 'bg-sky-500', barra: 'bg-sky-400',
+    faixa: 'border-l-sky-400', hex: '#38bdf8',
   },
 }
 

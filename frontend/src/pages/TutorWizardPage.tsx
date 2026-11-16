@@ -1,28 +1,31 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import {
-  Activity,
   AlertOctagon,
   AlertTriangle,
   Ambulance,
   ArrowLeft,
   ArrowRight,
+  Check,
   CheckCircle2,
+  ChevronDown,
   Clock,
   ExternalLink,
-  HeartPulse,
   MapPin,
   MessageCircle,
   Navigation,
   Pill,
+  Search,
   ShieldAlert,
   ShieldCheck,
   Siren,
   Sparkles,
 } from 'lucide-react'
+import { BrandLogo } from '../components/BrandLogo'
+import { ClinicAvatar } from '../components/ui'
 import { api } from '../lib/api'
 import { assinatura, avaliarGatilhos, ROTULO_CATEGORIA } from '../lib/emergencia'
-import { classes, descricaoPet } from '../lib/format'
+import { classes, descricaoPet, semAcento } from '../lib/format'
 import type {
   AcionarEmergenciaIn,
   AcionarEmergenciaOut,
@@ -34,58 +37,168 @@ import type {
   TriagemSubmissaoOut,
 } from '../types'
 
+type Passo = 1 | 2 | 3 | 4 | 5 | 6 | 7
+
+const TITULOS_PASSOS = ['Termo', 'Saúde', 'Rotina', 'Sinais', 'Remédios', 'Relato']
+
+// ---------------------------------------------------------------------------
+// Componentes de interface (Touch Cards)
+// ---------------------------------------------------------------------------
+
+function Opcoes({
+  rotulo,
+  opcoes,
+  valor,
+  onChange,
+}: {
+  rotulo: string
+  opcoes: string[]
+  valor: string
+  onChange: (v: string) => void
+}) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="mb-2 text-sm font-semibold text-ink">{rotulo}</legend>
+      <div className="grid gap-2">
+        {opcoes.map((o) => {
+          const ativo = o === valor
+          return (
+            <button
+              key={o}
+              type="button"
+              onClick={() => onChange(o)}
+              aria-pressed={ativo}
+              className={classes(
+                'flex min-h-12 w-full cursor-pointer items-center gap-3 rounded-2xl border px-4 py-3 text-left text-sm transition active:scale-[0.99]',
+                ativo
+                  ? 'border-brand bg-brand-soft font-semibold text-ink ring-2 ring-brand/20'
+                  : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300',
+              )}
+            >
+              <span
+                className={classes(
+                  'flex h-5 w-5 shrink-0 items-center justify-center rounded-full border',
+                  ativo ? 'border-brand bg-brand text-white' : 'border-slate-300',
+                )}
+              >
+                {ativo && <Check className="h-3 w-3" strokeWidth={3} />}
+              </span>
+              {o}
+            </button>
+          )
+        })}
+      </div>
+    </fieldset>
+  )
+}
+
+function CartaoPasso({
+  titulo,
+  subtitulo,
+  children,
+}: {
+  titulo: string
+  subtitulo?: string
+  children: React.ReactNode
+}) {
+  return (
+    <section className="card fade-up space-y-6 p-5 sm:p-7">
+      <div>
+        <h2 className="text-xl font-extrabold tracking-tight text-ink">{titulo}</h2>
+        {subtitulo && <p className="mt-1 text-sm text-ink-soft">{subtitulo}</p>}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function Navegacao({
+  onVoltar,
+  onAvancar,
+  rotuloAvancar = 'Continuar',
+  desabilitar = false,
+}: {
+  onVoltar?: () => void
+  onAvancar: () => void
+  rotuloAvancar?: string
+  desabilitar?: boolean
+}) {
+  return (
+    <div className="flex items-center gap-3 pt-2">
+      {onVoltar && (
+        <button type="button" onClick={onVoltar} className="btn-ghost h-12 px-4" aria-label="Voltar">
+          <ArrowLeft className="h-4 w-4" />
+        </button>
+      )}
+      <button type="button" onClick={onAvancar} disabled={desabilitar} className="btn-primary h-12 flex-1 text-base">
+        {rotuloAvancar}
+        <ArrowRight className="h-4 w-4" />
+      </button>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Página
+// ---------------------------------------------------------------------------
+
 export function TutorWizardPage() {
   const { token = '' } = useParams<{ token: string }>()
 
   const [ctx, setCtx] = useState<TriagemContexto | null>(null)
   const [carregando, setCarregando] = useState(true)
   const [erroFatal, setErroFatal] = useState<string | null>(null)
+  const [passo, setPasso] = useState<Passo>(1)
 
-  // Controle de passos: 1=Termo LGPD, 2=Manejo Preventivo, 3=Sintomas & Medicações, 4=Relato & Envio, 5=Concluído
-  const [passo, setPasso] = useState<1 | 2 | 3 | 4 | 5>(1)
-
-  // Passo 1
+  // 1 · Termo
   const [aceiteTermo, setAceiteTermo] = useState(false)
 
-  // Passo 2 — Manejo Preventivo Veterinário
-  const [ambiente, setAmbiente] = useState('Apartamento')
-  const [alimentacao, setAlimentacao] = useState('Ração seca super premium')
-  const [vacinaPolivalente, setVacinaPolivalente] = useState('Em dia (V8/V10 ou V4/V5)')
+  // 2 · Saúde preventiva
+  const [vacinaPolivalente, setVacinaPolivalente] = useState('Em dia')
   const [vacinaAntirrabica, setVacinaAntirrabica] = useState('Em dia')
   const [vermifugoStatus, setVermifugoStatus] = useState('Em dia (últimos 3 a 6 meses)')
   const [ectoparasitas, setEctoparasitas] = useState('Em dia (antipulgas/carrapatos)')
+
+  // 3 · Rotina
+  const [ambiente, setAmbiente] = useState('Apartamento')
+  const [alimentacao, setAlimentacao] = useState('Ração seca')
   const [acessoRua, setAcessoRua] = useState('Sem acesso à rua (domiciliado)')
   const [contactantes, setContactantes] = useState('Nenhum outro animal na casa')
 
-  // Passo 3 — Sintomas, Medicação (RN-002/RN-003) e Bioindicadores
+  // 4 · Sinais
   const [sintomasMarcados, setSintomasMarcados] = useState<Set<number>>(new Set())
-  const [medicamentoContinuo, setMedicamentoContinuo] = useState('')
-  const [aspectoUrinaFezes, setAspectoUrinaFezes] = useState('Urina e fezes normais')
-  const [alteracaoPesoApetite, setAlteracaoPesoApetite] = useState('Apetite e peso normais')
-  const [ingestaoHidrica, setIngestaoHidrica] = useState('Bebe água normalmente')
+  const [busca, setBusca] = useState('')
+  const [abertas, setAbertas] = useState<Set<string>>(new Set(['Emergência']))
 
-  // Passo 4 — Relato livre e evolução
-  const [tempoEvolucao, setTempoEvolucao] = useState('Há cerca de 24 horas')
+  // 5 · Remédios e bioindicadores
+  const [medicamentoContinuo, setMedicamentoContinuo] = useState('')
+  const [urinaFezes, setUrinaFezes] = useState('Urina e fezes normais')
+  const [urinaFezesDet, setUrinaFezesDet] = useState('')
+  const [apetite, setApetite] = useState('Apetite e peso normais')
+  const [apetiteDet, setApetiteDet] = useState('')
+  const [hidrica, setHidrica] = useState('Bebe água normalmente')
+
+  // 6 · Relato
+  const [tempoEvolucao, setTempoEvolucao] = useState('Algumas horas')
   const [relatoLivre, setRelatoLivre] = useState('')
   const [enviando, setEnviando] = useState(false)
   const [erroForm, setErroForm] = useState<string | null>(null)
 
-  // Passo 5 — Resultado pós-submissão
+  // 7 · Resultado
   const [submissaoOut, setSubmissaoOut] = useState<TriagemSubmissaoOut | null>(null)
   const [resultadoIA, setResultadoIA] = useState<ResultadoTutor | null>(null)
 
-  // Disjuntor RN-001 v2.0 (Modal Vermelho de Intercepção Imediata)
-  const [modalEmergenciaAberto, setModalEmergenciaAberto] = useState(false)
+  // Disjuntor RN-001 v2.0
+  const [modalAberto, setModalAberto] = useState(false)
   const [alertaExibidoEm, setAlertaExibidoEm] = useState<string | null>(null)
   const [cienteRiscoMorte, setCienteRiscoMorte] = useState(false)
   const [enderecoManual, setEnderecoManual] = useState('')
   const [capturandoGps, setCapturandoGps] = useState(false)
-  const [acionandoModalidade, setAcionandoModalidade] = useState<ModalidadeEmergencia | null>(null)
+  const [acionando, setAcionando] = useState<ModalidadeEmergencia | null>(null)
   const [emergenciaRegistrada, setEmergenciaRegistrada] = useState<AcionarEmergenciaOut | null>(null)
   const [erroEmergencia, setErroEmergencia] = useState<string | null>(null)
-  const ultimaAssinaturaRef = useRef<string>('')
+  const ultimaAssinaturaRef = useRef('')
 
-  // Carrega contexto inicial do link
   useEffect(() => {
     let cancelado = false
     async function carregar() {
@@ -95,9 +208,7 @@ export function TutorWizardPage() {
         const dados = await api<TriagemContexto>(`/publico/triagem/${token}`, { auth: false })
         if (cancelado) return
         setCtx(dados)
-        if (dados.estado === 'preenchida') {
-          setPasso(5)
-        }
+        if (dados.estado === 'preenchida') setPasso(7)
       } catch (err) {
         if (!cancelado) setErroFatal((err as Error).message)
       } finally {
@@ -110,75 +221,58 @@ export function TutorWizardPage() {
     }
   }, [token])
 
-  // Avalia gatilhos determinísticos em tempo real (sintomas de urgência + palavras críticas no relato)
+  // Disjuntor: sintoma de urgência marcado OU termo crítico no relato
   const gatilhos = useMemo(() => {
     if (!ctx) return { categorias: [], motivos: [], ativo: false }
-    return avaliarGatilhos(
-      ctx.sintomas,
-      sintomasMarcados,
-      relatoLivre,
-      ctx.emergencia.gatilhos_texto,
-    )
+    return avaliarGatilhos(ctx.sintomas, sintomasMarcados, relatoLivre, ctx.emergencia.gatilhos_texto)
   }, [ctx, sintomasMarcados, relatoLivre])
 
-  // Abre automaticamente o Modal de Intercepção sempre que uma nova categoria crítica surgir
   useEffect(() => {
     const sig = assinatura(gatilhos)
     if (gatilhos.ativo && sig !== ultimaAssinaturaRef.current) {
       ultimaAssinaturaRef.current = sig
-      if (!alertaExibidoEm) {
-        setAlertaExibidoEm(new Date().toISOString())
-      }
-      setModalEmergenciaAberto(true)
+      if (!alertaExibidoEm) setAlertaExibidoEm(new Date().toISOString())
+      setModalAberto(true)
     } else if (!gatilhos.ativo) {
       ultimaAssinaturaRef.current = ''
     }
   }, [gatilhos, alertaExibidoEm])
 
-  // Polling do resultado da IA quando no passo 5
+  // Polling do resultado da IA
   useEffect(() => {
-    if (passo !== 5 || !token) return
+    if (passo !== 7 || !token) return
     let ativo = true
     let timer: number | undefined
-
-    async function consultarResultado() {
+    async function consultar() {
       try {
-        const res = await api<ResultadoTutor>(`/publico/triagem/${token}/resultado`, {
-          auth: false,
-        })
+        const res = await api<ResultadoTutor>(`/publico/triagem/${token}/resultado`, { auth: false })
         if (!ativo) return
         setResultadoIA(res)
-        if (res.status_ia === 'pendente') {
-          timer = window.setTimeout(consultarResultado, 2500)
-        }
+        if (res.status_ia === 'pendente') timer = window.setTimeout(consultar, 2500)
       } catch {
-        // Ignora silenciosamente se ainda não processou
+        /* ainda processando */
       }
     }
-    consultarResultado()
+    consultar()
     return () => {
       ativo = false
       if (timer) window.clearTimeout(timer)
     }
   }, [passo, token])
 
-  // Agrupamento de sintomas por categoria anatômica (Emergência no topo)
-  const sintomasPorCategoria = useMemo(() => {
+  // Sintomas agrupados por categoria (Emergência primeiro) com busca
+  const grupos = useMemo(() => {
     if (!ctx) return []
+    const q = semAcento(busca.trim())
     const mapa = new Map<string, SintomaPublico[]>()
     for (const s of ctx.sintomas) {
-      const lista = mapa.get(s.categoria) ?? []
-      lista.push(s)
-      mapa.set(s.categoria, lista)
+      if (q && !semAcento(s.nome_sintoma).includes(q) && !semAcento(s.categoria).includes(q)) continue
+      mapa.set(s.categoria, [...(mapa.get(s.categoria) ?? []), s])
     }
-    const entradas = Array.from(mapa.entries())
-    entradas.sort(([a], [b]) => {
-      if (a === 'Emergência') return -1
-      if (b === 'Emergência') return 1
-      return a.localeCompare(b, 'pt-BR')
-    })
-    return entradas
-  }, [ctx])
+    return Array.from(mapa.entries()).sort(([a], [b]) =>
+      a === 'Emergência' ? -1 : b === 'Emergência' ? 1 : a.localeCompare(b, 'pt-BR'),
+    )
+  }, [ctx, busca])
 
   function alternarSintoma(id: number) {
     setSintomasMarcados((prev) => {
@@ -189,19 +283,30 @@ export function TutorWizardPage() {
     })
   }
 
-  function capturarGeolocalizacao(): Promise<string | null> {
+  function alternarGrupo(cat: string) {
+    setAbertas((prev) => {
+      const novo = new Set(prev)
+      if (novo.has(cat)) novo.delete(cat)
+      else novo.add(cat)
+      return novo
+    })
+  }
+
+  function abrirEmergencia() {
+    if (!alertaExibidoEm) setAlertaExibidoEm(new Date().toISOString())
+    setModalAberto(true)
+  }
+
+  function capturarGps(): Promise<string | null> {
     return new Promise((resolve) => {
-      if (!('geolocation' in navigator)) {
-        resolve(null)
-        return
-      }
+      if (!('geolocation' in navigator)) return resolve(null)
       setCapturandoGps(true)
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           setCapturandoGps(false)
-          const coords = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`
-          setEnderecoManual(coords)
-          resolve(coords)
+          const c = `${pos.coords.latitude.toFixed(6)},${pos.coords.longitude.toFixed(6)}`
+          setEnderecoManual(c)
+          resolve(c)
         },
         () => {
           setCapturandoGps(false)
@@ -212,29 +317,22 @@ export function TutorWizardPage() {
     })
   }
 
-  async function acionarEmergenciaAgora(modalidade: ModalidadeEmergencia) {
+  async function acionar(modalidade: ModalidadeEmergencia) {
     if (!ctx) return
     setErroEmergencia(null)
-
     if (!cienteRiscoMorte) {
-      setErroEmergencia(
-        'Por favor, marque a confirmação de ciência de risco imediato antes de acionar a equipe.',
-      )
+      setErroEmergencia('Marque a confirmação de ciência do risco para acionar a equipe.')
       return
     }
-
     let loc = enderecoManual.trim() || null
     if (modalidade === 'RESGATE_SOLICITADO' && !loc) {
-      loc = await capturarGeolocalizacao()
+      loc = await capturarGps()
       if (!loc || loc.length < 5) {
-        setErroEmergencia(
-          'Não foi possível obter seu GPS automaticamente. Digite seu endereço ou localização no campo abaixo para enviar o veículo de resgate.',
-        )
+        setErroEmergencia('Não conseguimos obter seu GPS. Digite seu endereço no campo acima.')
         return
       }
     }
-
-    setAcionandoModalidade(modalidade)
+    setAcionando(modalidade)
     try {
       const payload: AcionarEmergenciaIn = {
         modalidade,
@@ -243,74 +341,68 @@ export function TutorWizardPage() {
         alerta_critico_exibido_em: alertaExibidoEm ?? new Date().toISOString(),
         categorias_emergencia: gatilhos.categorias.length ? gatilhos.categorias : ['GERAL'],
       }
-      const res = await api<AcionarEmergenciaOut>(
-        `/publico/triagem/${token}/acionar-emergencia`,
-        {
-          method: 'POST',
-          body: payload,
-          auth: false,
-        },
-      )
+      const res = await api<AcionarEmergenciaOut>(`/publico/triagem/${token}/acionar-emergencia`, {
+        method: 'POST',
+        body: payload,
+        auth: false,
+      })
       setEmergenciaRegistrada(res)
-
       if (modalidade === 'RESGATE_SOLICITADO' && res.whatsapp_resgate_url) {
         window.open(res.whatsapp_resgate_url, '_blank', 'noopener,noreferrer')
       }
     } catch (err) {
       setErroEmergencia((err as Error).message)
     } finally {
-      setAcionandoModalidade(null)
+      setAcionando(null)
     }
   }
 
-  async function handleSubmeterTriagem(e: React.FormEvent) {
-    e.preventDefault()
+  function validarEAvancar(destino: Passo) {
+    setErroForm(null)
+    if (passo === 5 && medicamentoContinuo.trim().length < 2) {
+      setErroForm('Informe os remédios das últimas 48h ou toque em “Nenhum medicamento”.')
+      return
+    }
+    setPasso(destino)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  async function enviar() {
     if (!ctx) return
     setErroForm(null)
-
-    if (medicamentoContinuo.trim().length < 2) {
-      setErroForm('Informe os medicamentos em uso ou clique em "Nenhum medicamento".')
-      setPasso(3)
-      return
-    }
     if (relatoLivre.trim().length < 10) {
-      setErroForm('Descreva com mais detalhes o que está acontecendo (mínimo de 10 caracteres).')
+      setErroForm('Conte com um pouco mais de detalhe o que está acontecendo (mínimo 10 caracteres).')
       return
     }
-
-    const vacinacaoEmDia =
-      vacinaPolivalente.startsWith('Em dia') && vacinaAntirrabica.startsWith('Em dia')
-    const vermifugoEmDia = vermifugoStatus.startsWith('Em dia')
-    const convivioOutros = !contactantes.startsWith('Nenhum')
-    const manejoPreventivo = [
-      `Polivalente (${ctx.pet.especie === 'Gato' ? 'V4/V5' : 'V8/V10'}): ${vacinaPolivalente}`,
-      `Antirrábica: ${vacinaAntirrabica}`,
-      `Vermífugo: ${vermifugoStatus}`,
-      `Ectoparasitas: ${ectoparasitas}`,
-      `Acesso à rua: ${acessoRua}`,
-      `Contactantes: ${contactantes}`,
-    ].join(' · ')
+    const polivalente = ctx.pet.especie === 'Gato' ? 'V4/V5' : 'V8/V10'
+    const juntar = (opc: string, det: string) => (det.trim() ? `${opc} — ${det.trim()}` : opc)
 
     const payload: TriagemSubmissao = {
       aceite_termo: aceiteTermo,
       ambiente,
       alimentacao,
-      vacinacao_em_dia: vacinacaoEmDia,
-      vermifugo_em_dia: vermifugoEmDia,
-      convivio_outros_animais: convivioOutros,
-      manejo_preventivo: manejoPreventivo,
+      vacinacao_em_dia: vacinaPolivalente.startsWith('Em dia') && vacinaAntirrabica.startsWith('Em dia'),
+      vermifugo_em_dia: vermifugoStatus.startsWith('Em dia'),
+      convivio_outros_animais: !contactantes.startsWith('Nenhum'),
+      manejo_preventivo: [
+        `Polivalente (${polivalente}): ${vacinaPolivalente}`,
+        `Antirrábica: ${vacinaAntirrabica}`,
+        `Vermífugo: ${vermifugoStatus}`,
+        `Ectoparasitas: ${ectoparasitas}`,
+        `Acesso à rua: ${acessoRua}`,
+        `Contactantes: ${contactantes}`,
+      ].join(' · '),
       medicamento_continuo: medicamentoContinuo.trim(),
-      aspecto_urina_fezes: aspectoUrinaFezes.trim(),
-      alteracao_peso_apetite: alteracaoPesoApetite.trim(),
-      ingestao_hidrica: ingestaoHidrica.trim(),
-      tempo_evolucao: tempoEvolucao.trim(),
+      aspecto_urina_fezes: juntar(urinaFezes, urinaFezesDet),
+      alteracao_peso_apetite: juntar(apetite, apetiteDet),
+      ingestao_hidrica: hidrica,
+      tempo_evolucao: tempoEvolucao,
       relato_livre_tutor: relatoLivre.trim(),
       sintoma_ids: Array.from(sintomasMarcados),
       ciente_risco_morte: cienteRiscoMorte,
       alerta_critico_exibido_em: alertaExibidoEm,
       modalidade_emergencia: emergenciaRegistrada?.modalidade_emergencia ?? null,
-      localizacao_gps_tutor:
-        emergenciaRegistrada?.localizacao_gps_tutor ?? (enderecoManual.trim() || null),
+      localizacao_gps_tutor: emergenciaRegistrada?.localizacao_gps_tutor ?? (enderecoManual.trim() || null),
     }
 
     setEnviando(true)
@@ -321,7 +413,8 @@ export function TutorWizardPage() {
         auth: false,
       })
       setSubmissaoOut(resp)
-      setPasso(5)
+      setPasso(7)
+      window.scrollTo({ top: 0, behavior: 'smooth' })
     } catch (err) {
       setErroForm((err as Error).message)
     } finally {
@@ -329,16 +422,15 @@ export function TutorWizardPage() {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Estados de tela cheia
+  // -------------------------------------------------------------------------
   if (carregando) {
     return (
-      <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center p-6">
-        <div className="flex flex-col items-center gap-3 text-center">
-          <div className="h-12 w-12 rounded-2xl bg-teal-500/20 border border-teal-400/40 flex items-center justify-center animate-pulse">
-            <Activity className="h-6 w-6 text-teal-300" />
-          </div>
-          <p className="text-sm font-medium text-slate-300">
-            Carregando Triagem Pré-Consulta segura...
-          </p>
+      <div className="flex min-h-screen items-center justify-center bg-surface p-6">
+        <div className="flex flex-col items-center gap-4">
+          <BrandLogo variant="mark" markSize="h-14 w-14" className="animate-pulse" />
+          <p className="text-sm text-ink-soft">Preparando sua triagem…</p>
         </div>
       </div>
     )
@@ -346,21 +438,18 @@ export function TutorWizardPage() {
 
   if (erroFatal || !ctx) {
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-        <div className="max-w-md w-full rounded-3xl border border-red-500/40 bg-slate-900 p-6 text-center space-y-4">
-          <AlertOctagon className="h-12 w-12 text-red-400 mx-auto" />
-          <h1 className="text-lg font-bold">Link indisponível</h1>
-          <p className="text-xs text-slate-300 leading-relaxed">
-            {erroFatal ?? 'Não foi possível localizar esta Triagem Pré-Consulta.'}
-          </p>
+      <div className="flex min-h-screen items-center justify-center bg-surface p-6">
+        <div className="card w-full max-w-sm space-y-4 p-6 text-center">
+          <AlertOctagon className="mx-auto h-10 w-10 text-red-500" />
+          <h1 className="text-lg font-bold text-ink">Link indisponível</h1>
+          <p className="text-sm text-ink-soft">{erroFatal ?? 'Não encontramos esta triagem.'}</p>
           <a
             href="https://www.google.com/maps/search/Hospital+Veterinario+24h/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center justify-center gap-2 w-full rounded-xl bg-red-600 hover:bg-red-500 px-4 py-3 text-xs font-bold text-white transition"
+            target="_blank" rel="noopener noreferrer"
+            className="btn-danger w-full"
           >
             <MapPin className="h-4 w-4" />
-            Buscar Hospital Veterinário 24h no Google Maps
+            Hospital Veterinário 24h mais próximo
           </a>
         </div>
       </div>
@@ -369,886 +458,619 @@ export function TutorWizardPage() {
 
   if (ctx.estado === 'cancelada' || ctx.estado === 'expirada') {
     return (
-      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-6">
-        <div className="max-w-md w-full rounded-3xl border border-amber-500/40 bg-slate-900 p-6 text-center space-y-4">
-          <AlertTriangle className="h-12 w-12 text-amber-400 mx-auto" />
-          <h1 className="text-lg font-bold">
-            {ctx.estado === 'cancelada' ? 'Consulta cancelada' : 'Link de triagem expirado'}
+      <div className="flex min-h-screen items-center justify-center bg-surface p-6">
+        <div className="card w-full max-w-sm space-y-4 p-6 text-center">
+          <AlertTriangle className="mx-auto h-10 w-10 text-amber-500" />
+          <h1 className="text-lg font-bold text-ink">
+            {ctx.estado === 'cancelada' ? 'Consulta cancelada' : 'Link expirado'}
           </h1>
-          <p className="text-xs text-slate-300 leading-relaxed">
-            Solicite um novo link à recepção de <strong>{ctx.clinica_nome}</strong>. Em caso de
-            emergência, dirija-se imediatamente ao pronto-socorro veterinário.
+          <p className="text-sm text-ink-soft">
+            Peça um novo link à recepção de <strong>{ctx.clinica_nome}</strong>. Em caso de emergência, vá
+            imediatamente ao pronto-socorro veterinário.
           </p>
-          <a
-            href={ctx.emergencia.url_hospital_24h}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center justify-center gap-2 w-full rounded-xl bg-red-600 hover:bg-red-500 px-4 py-3 text-xs font-bold text-white transition"
-          >
+          <a href={ctx.emergencia.url_hospital_24h} target="_blank" rel="noopener noreferrer" className="btn-danger w-full">
             <MapPin className="h-4 w-4" />
-            Buscar Hospital Veterinário 24h Mais Próximo
+            Hospital Veterinário 24h mais próximo
           </a>
         </div>
       </div>
     )
   }
 
-  const clinicaFechadaAgora =
-    !ctx.emergencia.atendimento_24h && !ctx.emergencia.clinica_aberta_agora
+  const clinicaFechada = !ctx.emergencia.atendimento_24h && !ctx.emergencia.clinica_aberta_agora
   const categoriasAtivas = gatilhos.categorias.length ? gatilhos.categorias : ['GERAL']
+  const urgenciaFinal = Boolean(submissaoOut?.urgencia_detectada || resultadoIA?.urgencia_detectada)
+  const socorros = resultadoIA?.primeiros_socorros_negativos ?? submissaoOut?.primeiros_socorros_negativos ?? {}
+  const progresso = passo >= 7 ? 100 : Math.round(((passo - 1) / 6) * 100) + 8
+  const modalidadeAtiva = emergenciaRegistrada?.modalidade_emergencia ?? ctx.modalidade_emergencia
 
   return (
-    <div className="min-h-screen bg-slate-100 pb-16">
-      {/* Cabeçalho Mobile VetTech */}
-      <header className="bg-gradient-to-r from-slate-900 via-teal-950 to-slate-900 text-white px-4 py-4 shadow-md">
-        <div className="mx-auto max-w-xl flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-500 text-slate-950 font-extrabold shadow">
-              <HeartPulse className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="text-xs font-semibold text-teal-300 uppercase tracking-wider">
-                {ctx.clinica_nome}
+    <div className="min-h-screen bg-surface pb-12">
+      {/* ===== Header de confiança dupla (Co-Branding Clínica × TrIAgem) ===== */}
+      <header className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex max-w-lg items-center gap-3 px-4 py-3.5">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <ClinicAvatar nome={ctx.clinica_nome} logoUrl={ctx.logo_url} className="h-12 w-12 text-base" />
+            <div className="min-w-0 leading-tight">
+              <div className="truncate text-sm font-bold text-ink">{ctx.clinica_nome}</div>
+              <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-ink-soft">
+                <span className={classes('h-1.5 w-1.5 rounded-full', clinicaFechada ? 'bg-slate-400' : 'bg-emerald-500')} />
+                {ctx.emergencia.atendimento_24h
+                  ? 'Atendimento 24h'
+                  : clinicaFechada
+                    ? `Fechada · fechou às ${ctx.emergencia.horario_fechamento}`
+                    : `Aberta até ${ctx.emergencia.horario_fechamento}`}
               </div>
-              <h1 className="text-base font-extrabold tracking-tight">
-                Triagem Pré-Consulta · {ctx.pet.nome}
-              </h1>
-              <p className="text-[11px] text-slate-300">{descricaoPet(ctx.pet)}</p>
             </div>
           </div>
-
-          <button
-            type="button"
-            onClick={() => {
-              if (!alertaExibidoEm) setAlertaExibidoEm(new Date().toISOString())
-              setModalEmergenciaAberto(true)
-            }}
-            className="shrink-0 flex items-center gap-1.5 rounded-xl bg-red-600 hover:bg-red-500 px-3 py-2 text-xs font-extrabold text-white shadow-lg cursor-pointer emergency-pulse"
-          >
-            <Siren className="h-4 w-4" />
-            <span>Emergência</span>
-          </button>
+          <span className="select-none text-lg font-light text-slate-300" aria-hidden="true">×</span>
+          <div className="shrink-0">
+            <BrandLogo variant="full" textSize="text-base" markSize="h-7 w-7" selo />
+          </div>
         </div>
+        {/* Progresso */}
+        {passo < 7 && (
+          <div className="h-1 w-full bg-slate-100">
+            <div className="bg-brand-gradient h-full rounded-r-full transition-all duration-500" style={{ width: `${progresso}%` }} />
+          </div>
+        )}
       </header>
 
-      {/* Banner Persistente se Emergência Já Acionada ou Gatilho Ativo */}
-      {(gatilhos.ativo || emergenciaRegistrada || ctx.modalidade_emergencia) && (
-        <div className="bg-red-700 text-white px-4 py-3 shadow-md">
-          <div className="mx-auto max-w-xl flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-xs font-bold">
-              <Siren className="h-4 w-4 shrink-0 animate-bounce" />
-              <span>
-                {emergenciaRegistrada?.modalidade_emergencia === 'RESGATE_SOLICITADO' ||
-                ctx.modalidade_emergencia === 'RESGATE_SOLICITADO'
-                  ? '🚑 VEÍCULO DE RESGATE SOLICITADO — Equipe de plantão acionada!'
-                  : emergenciaRegistrada?.modalidade_emergencia === 'EMERGENCIA_A_CAMINHO' ||
-                      ctx.modalidade_emergencia === 'EMERGENCIA_A_CAMINHO'
-                    ? '🚨 EMERGÊNCIA EM DESLOCAMENTO — Box de Emergência avisado!'
-                    : `⚠️ Sinais críticos detectados (${gatilhos.motivos.length}) — Atenção imediata!`}
-              </span>
+      <main className="mx-auto max-w-lg space-y-4 px-4 pt-5">
+        {/* Saudação + botão de emergência discreto */}
+        {passo < 7 && (
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-ink">
+                Triagem de {ctx.pet.nome}
+              </p>
+              <p className="truncate text-xs text-ink-soft">{descricaoPet(ctx.pet)}</p>
             </div>
             <button
               type="button"
-              onClick={() => setModalEmergenciaAberto(true)}
-              className="rounded-lg bg-white text-red-800 px-2.5 py-1 text-xs font-extrabold shadow cursor-pointer"
+              onClick={abrirEmergencia}
+              className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-red-50 px-3.5 py-2 text-xs font-bold text-red-700 ring-1 ring-inset ring-red-200 transition hover:bg-red-100"
             >
-              Abrir Painel de Emergência
+              <Siren className="h-4 w-4" />
+              Emergência
             </button>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Barra de Progresso dos 4 Passos */}
-      {passo < 5 && (
-        <div className="mx-auto max-w-xl px-4 pt-4">
-          <div className="grid grid-cols-4 gap-2">
-            {[
-              { n: 1, t: '1. Termo LGPD' },
-              { n: 2, t: '2. Preventivo' },
-              { n: 3, t: '3. Sintomas' },
-              { n: 4, t: '4. Relato' },
-            ].map((item) => (
-              <div
-                key={item.n}
+        {passo < 7 && (
+          <p className="text-xs font-medium text-ink-soft">
+            Passo {passo} de 6 · <span className="text-ink">{TITULOS_PASSOS[passo - 1]}</span>
+          </p>
+        )}
+
+        {/* Banner persistente quando há gatilho/emergência */}
+        {(gatilhos.ativo || modalidadeAtiva) && passo < 7 && (
+          <button
+            type="button"
+            onClick={() => setModalAberto(true)}
+            className="flex w-full cursor-pointer items-center gap-3 rounded-2xl bg-red-600 px-4 py-3 text-left text-sm font-semibold text-white shadow-md"
+          >
+            <Siren className="h-5 w-5 shrink-0" />
+            <span className="flex-1">
+              {modalidadeAtiva === 'RESGATE_SOLICITADO'
+                ? 'Resgate solicitado — equipe acionada'
+                : modalidadeAtiva === 'EMERGENCIA_A_CAMINHO'
+                  ? 'Equipe avisada — você está a caminho'
+                  : 'Sinais críticos detectados — toque para ver o que fazer'}
+            </span>
+            <ArrowRight className="h-4 w-4" />
+          </button>
+        )}
+
+        {erroForm && (
+          <div className="flex items-start gap-2 rounded-2xl bg-red-50 p-3.5 text-sm text-red-700 ring-1 ring-red-200">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            {erroForm}
+          </div>
+        )}
+
+        {/* ===== PASSO 1 · TERMO ===== */}
+        {passo === 1 && (
+          <CartaoPasso
+            titulo={`Olá, ${ctx.tutor_primeiro_nome}!`}
+            subtitulo={`Em ~2 minutos o veterinário já recebe tudo sobre ${ctx.pet.nome} antes da consulta.`}
+          >
+            <div className="flex gap-3 rounded-2xl bg-red-50 p-4 text-sm text-red-900">
+              <Siren className="mt-0.5 h-5 w-5 shrink-0 text-red-500" />
+              <p>
+                Se {ctx.pet.nome} estiver com falta de ar, convulsão, sangramento intenso, atropelamento ou
+                envenenamento, <strong>não preencha o formulário</strong>: toque em <strong>Emergência</strong>.
+              </p>
+            </div>
+
+            <details className="group rounded-2xl border border-slate-200 p-4 text-sm text-ink-soft">
+              <summary className="flex cursor-pointer list-none items-center justify-between font-semibold text-ink">
+                Termo de ciência e LGPD
+                <ChevronDown className="h-4 w-4 transition group-open:rotate-180" />
+              </summary>
+              <p className="mt-3 leading-relaxed">{ctx.texto_termo}</p>
+            </details>
+
+            <button
+              type="button"
+              onClick={() => setAceiteTermo((v) => !v)}
+              aria-pressed={aceiteTermo}
+              className={classes(
+                'flex w-full cursor-pointer items-start gap-3 rounded-2xl border p-4 text-left text-sm transition',
+                aceiteTermo ? 'border-brand bg-brand-soft ring-2 ring-brand/20' : 'border-slate-200 bg-white',
+              )}
+            >
+              <span
                 className={classes(
-                  'rounded-xl px-2 py-1.5 text-center text-[11px] font-bold border transition',
-                  passo === item.n
-                    ? 'bg-teal-700 text-white border-teal-700 shadow-sm'
-                    : passo > item.n
-                      ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                      : 'bg-white text-slate-400 border-slate-200',
+                  'mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border',
+                  aceiteTermo ? 'border-brand bg-brand text-white' : 'border-slate-300',
                 )}
               >
-                {item.t}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Conteúdo Principal do Wizard */}
-      <main className="mx-auto max-w-xl px-4 pt-4">
-        {erroForm && (
-          <div className="mb-4 rounded-2xl border border-red-300 bg-red-50 p-3.5 text-xs font-medium text-red-800 flex items-start gap-2">
-            <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
-            <span>{erroForm}</span>
-          </div>
-        )}
-
-        {/* PASSO 1 — TERMO LGPD E RESPONSABILIDADE DE EMERGÊNCIA */}
-        {passo === 1 && (
-          <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm space-y-5">
-            <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-teal-50 text-teal-700 border border-teal-200">
-                <ShieldCheck className="h-5 w-5" />
-              </div>
-              <div>
-                <h2 className="text-base font-extrabold text-slate-900">
-                  Olá, {ctx.tutor_primeiro_nome}! Vamos preparar o atendimento de {ctx.pet.nome}
-                </h2>
-                <p className="mt-0.5 text-xs text-slate-600">
-                  Leva menos de 2 minutos e permite que o médico veterinário receba o Briefing
-                  Clínico Prévio antes mesmo de vocês entrarem no consultório.
-                </p>
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-red-200 bg-red-50/80 p-4 space-y-2">
-              <div className="flex items-center gap-2 text-xs font-extrabold text-red-800 uppercase tracking-wide">
-                <AlertOctagon className="h-4 w-4 text-red-600" />
-                <span>Aviso Importante de Emergência (RN-001 v2.0)</span>
-              </div>
-              <p className="text-xs text-red-900 leading-relaxed">
-                Se <strong>{ctx.pet.nome}</strong> estiver com falta de ar, língua roxa, convulsão,
-                sangramento intenso, atropelamento ou suspeita de envenenamento,{' '}
-                <strong>não aguarde</strong>: clique no botão vermelho <strong>Emergência</strong>{' '}
-                no topo para acionar o Box de Emergência ou solicitar o veículo de resgate.
-              </p>
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-700 leading-relaxed">
-              <p className="font-semibold text-slate-900 mb-1">
-                Termo de Ciência e Consentimento LGPD (Lei 13.709/2018):
-              </p>
-              <p>{ctx.texto_termo}</p>
-            </div>
-
-            <label className="flex items-start gap-3 rounded-2xl border border-teal-200 bg-teal-50/50 p-3.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={aceiteTermo}
-                onChange={(e) => setAceiteTermo(e.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-teal-600 focus:ring-teal-500"
-              />
-              <span className="text-xs font-semibold text-slate-800">
-                Li e aceito o termo de consentimento LGPD e compreendo que esta pré-triagem não
-                substitui atendimento emergencial imediato.
+                {aceiteTermo && <Check className="h-3 w-3" strokeWidth={3} />}
               </span>
-            </label>
-
-            <button
-              type="button"
-              disabled={!aceiteTermo}
-              onClick={() => setPasso(2)}
-              className="w-full flex items-center justify-center gap-2 rounded-2xl bg-teal-700 hover:bg-teal-600 disabled:opacity-40 py-3.5 px-4 text-sm font-extrabold text-white shadow-md transition cursor-pointer"
-            >
-              <span>Continuar para Manejo Preventivo</span>
-              <ArrowRight className="h-4 w-4" />
+              <span className="font-medium text-ink">
+                Li e aceito o termo. Entendo que esta triagem não substitui atendimento de emergência.
+              </span>
             </button>
-          </section>
+            <Navegacao onAvancar={() => validarEAvancar(2)} desabilitar={!aceiteTermo} rotuloAvancar="Começar" />
+          </CartaoPasso>
         )}
 
-        {/* PASSO 2 — MANEJO PREVENTIVO VETERINÁRIO */}
+        {/* ===== PASSO 2 · SAÚDE PREVENTIVA ===== */}
         {passo === 2 && (
-          <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm space-y-4">
-            <div>
-              <h2 className="text-base font-extrabold text-slate-900">
-                Passo 2 · Manejo Preventivo e Ambiente
-              </h2>
-              <p className="text-xs text-slate-600">
-                Informações sobre vacinas, vermífugo, controle de pulgas/carrapatos e rotina de{' '}
-                <strong>{ctx.pet.nome}</strong>.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Vacina Polivalente ({ctx.pet.especie === 'Gato' ? 'V4 / V5' : 'V8 / V10'})
-                </label>
-                <select
-                  value={vacinaPolivalente}
-                  onChange={(e) => setVacinaPolivalente(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-medium text-slate-900"
-                >
-                  <option>Em dia (V8/V10 ou V4/V5)</option>
-                  <option>Atrasada há mais de 1 ano</option>
-                  <option>Filhote em esquema vacinal incompleto</option>
-                  <option>Nunca vacinado / Não sei informar</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Vacina Antirrábica
-                </label>
-                <select
-                  value={vacinaAntirrabica}
-                  onChange={(e) => setVacinaAntirrabica(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-medium text-slate-900"
-                >
-                  <option>Em dia</option>
-                  <option>Atrasada</option>
-                  <option>Ainda não tomou / Não sei</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Vermifugação</label>
-                <select
-                  value={vermifugoStatus}
-                  onChange={(e) => setVermifugoStatus(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-medium text-slate-900"
-                >
-                  <option>Em dia (últimos 3 a 6 meses)</option>
-                  <option>Atrasado (mais de 6 meses)</option>
-                  <option>Nunca tomou / Não lembro</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Controle de Ectoparasitas (Pulgas/Carrapatos)
-                </label>
-                <select
-                  value={ectoparasitas}
-                  onChange={(e) => setEctoparasitas(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-medium text-slate-900"
-                >
-                  <option>Em dia (antipulgas/carrapatos)</option>
-                  <option>Atrasado / Sem proteção recente</option>
-                  <option>Presença visível de pulgas ou carrapatos hoje</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Ambiente onde vive
-                </label>
-                <input
-                  type="text"
-                  value={ambiente}
-                  onChange={(e) => setAmbiente(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs text-slate-900"
-                  placeholder="Ex: Apartamento telado, Casa com quintal"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Acesso à rua</label>
-                <select
-                  value={acessoRua}
-                  onChange={(e) => setAcessoRua(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-medium text-slate-900"
-                >
-                  <option>Sem acesso à rua (domiciliado)</option>
-                  <option>Passeios na guia com supervisão</option>
-                  <option>Acesso livre à rua / quintal aberto</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Convívio com outros animais (Contactantes)
-              </label>
-              <input
-                type="text"
-                value={contactantes}
-                onChange={(e) => setContactantes(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs text-slate-900"
-                placeholder="Ex: Nenhum outro animal / Convive com 2 cães saudáveis"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Alimentação habitual
-              </label>
-              <input
-                type="text"
-                value={alimentacao}
-                onChange={(e) => setAlimentacao(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs text-slate-900"
-                placeholder="Ex: Ração seca super premium, sachê úmido, alimentação natural"
-              />
-            </div>
-
-            <div className="flex items-center justify-between gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setPasso(1)}
-                className="flex items-center gap-1.5 rounded-xl border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                <span>Voltar</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setPasso(3)}
-                className="flex items-center gap-2 rounded-xl bg-teal-700 hover:bg-teal-600 px-5 py-2.5 text-xs font-extrabold text-white shadow cursor-pointer"
-              >
-                <span>Avançar para Sintomas</span>
-                <ArrowRight className="h-4 w-4" />
-              </button>
-            </div>
-          </section>
+          <CartaoPasso titulo="Saúde preventiva" subtitulo={`Vacinas e cuidados de ${ctx.pet.nome}.`}>
+            <Opcoes
+              rotulo={`Vacina polivalente (${ctx.pet.especie === 'Gato' ? 'V4/V5' : 'V8/V10'})`}
+              opcoes={['Em dia', 'Atrasada', 'Filhote em esquema vacinal', 'Nunca vacinou / não sei']}
+              valor={vacinaPolivalente}
+              onChange={setVacinaPolivalente}
+            />
+            <Opcoes
+              rotulo="Vacina antirrábica"
+              opcoes={['Em dia', 'Atrasada', 'Ainda não tomou / não sei']}
+              valor={vacinaAntirrabica}
+              onChange={setVacinaAntirrabica}
+            />
+            <Opcoes
+              rotulo="Vermífugo"
+              opcoes={['Em dia (últimos 3 a 6 meses)', 'Atrasado (mais de 6 meses)', 'Nunca tomou / não lembro']}
+              valor={vermifugoStatus}
+              onChange={setVermifugoStatus}
+            />
+            <Opcoes
+              rotulo="Antipulgas e carrapatos"
+              opcoes={['Em dia (antipulgas/carrapatos)', 'Atrasado / sem proteção', 'Vi pulgas ou carrapatos hoje']}
+              valor={ectoparasitas}
+              onChange={setEctoparasitas}
+            />
+            <Navegacao onVoltar={() => setPasso(1)} onAvancar={() => validarEAvancar(3)} />
+          </CartaoPasso>
         )}
 
-        {/* PASSO 3 — CHECKLIST DE SINTOMAS + MEDICAÇÕES 48H (RN-003) + BIOINDICADORES */}
+        {/* ===== PASSO 3 · ROTINA ===== */}
         {passo === 3 && (
-          <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm space-y-5">
-            <div>
-              <h2 className="text-base font-extrabold text-slate-900">
-                Passo 3 · Checklist de Sinais e Segurança Farmacológica
-              </h2>
-              <p className="text-xs text-slate-600">
-                Marque os sinais observados em <strong>{ctx.pet.nome}</strong>. Sinais críticos
-                acionam automaticamente o protocolo de emergência.
-              </p>
+          <CartaoPasso titulo="Rotina e ambiente" subtitulo="Como é o dia a dia dele(a)?">
+            <Opcoes rotulo="Onde vive" opcoes={['Apartamento', 'Casa com quintal', 'Sítio / chácara']} valor={ambiente} onChange={setAmbiente} />
+            <Opcoes
+              rotulo="Alimentação"
+              opcoes={['Ração seca', 'Ração úmida / sachê', 'Alimentação natural', 'Mista (ração + caseira)']}
+              valor={alimentacao}
+              onChange={setAlimentacao}
+            />
+            <Opcoes
+              rotulo="Acesso à rua"
+              opcoes={['Sem acesso à rua (domiciliado)', 'Passeia com guia', 'Acesso livre à rua / quintal aberto']}
+              valor={acessoRua}
+              onChange={setAcessoRua}
+            />
+            <Opcoes
+              rotulo="Convive com outros animais?"
+              opcoes={['Nenhum outro animal na casa', 'Convive com cães', 'Convive com gatos', 'Convive com cães e gatos']}
+              valor={contactantes}
+              onChange={setContactantes}
+            />
+            <Navegacao onVoltar={() => setPasso(2)} onAvancar={() => validarEAvancar(4)} />
+          </CartaoPasso>
+        )}
+
+        {/* ===== PASSO 4 · SINAIS ===== */}
+        {passo === 4 && (
+          <CartaoPasso
+            titulo="O que você notou?"
+            subtitulo="Toque nos sinais observados. Pode pular se não houver nenhum."
+          >
+            <div className="relative">
+              <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={busca}
+                onChange={(e) => setBusca(e.target.value)}
+                placeholder="Buscar sinal (ex.: vômito, tosse, coceira)"
+                className="input pl-10"
+              />
             </div>
 
-            <div className="space-y-4">
-              {sintomasPorCategoria.map(([categoria, lista]) => {
-                const ehEmergencia = categoria === 'Emergência'
+            {sintomasMarcados.size > 0 && (
+              <p className="text-xs font-medium text-brand">
+                {sintomasMarcados.size} {sintomasMarcados.size === 1 ? 'sinal selecionado' : 'sinais selecionados'}
+              </p>
+            )}
+
+            <div className="space-y-3">
+              {grupos.length === 0 && (
+                <p className="rounded-2xl bg-slate-50 p-4 text-center text-sm text-ink-soft">Nenhum sinal encontrado.</p>
+              )}
+              {grupos.map(([categoria, lista]) => {
+                const emerg = categoria === 'Emergência'
+                const aberto = Boolean(busca.trim()) || abertas.has(categoria)
+                const qtd = lista.filter((s) => sintomasMarcados.has(s.id_sintoma)).length
                 return (
                   <div
                     key={categoria}
-                    className={classes(
-                      'rounded-2xl border p-3.5',
-                      ehEmergencia
-                        ? 'border-red-300 bg-red-50/60'
-                        : 'border-slate-200 bg-slate-50/60',
-                    )}
+                    className={classes('overflow-hidden rounded-2xl border', emerg ? 'border-red-200' : 'border-slate-200')}
                   >
-                    <div className="flex items-center justify-between mb-2.5">
-                      <span
-                        className={classes(
-                          'text-xs font-extrabold uppercase tracking-wider flex items-center gap-1.5',
-                          ehEmergencia ? 'text-red-800' : 'text-slate-700',
+                    <button
+                      type="button"
+                      onClick={() => alternarGrupo(categoria)}
+                      aria-expanded={aberto}
+                      className={classes(
+                        'flex w-full cursor-pointer items-center justify-between px-4 py-3.5 text-left',
+                        emerg ? 'bg-red-50' : 'bg-white',
+                      )}
+                    >
+                      <span className="flex items-center gap-2 text-sm font-bold text-ink">
+                        {emerg && <Siren className="h-4 w-4 text-red-500" />}
+                        {emerg ? 'Sinais de emergência' : categoria}
+                        <span className="text-xs font-medium text-ink-soft">({lista.length})</span>
+                        {qtd > 0 && (
+                          <span className={classes('rounded-full px-2 py-0.5 text-[11px] font-bold text-white', emerg ? 'bg-red-500' : 'bg-brand')}>
+                            {qtd}
+                          </span>
                         )}
-                      >
-                        {ehEmergencia && <Siren className="h-4 w-4 text-red-600" />}
-                        {ehEmergencia
-                          ? 'Sinais Críticos de Emergência (RN-001 v2.0)'
-                          : categoria}
                       </span>
-                    </div>
-                    <div className="grid grid-cols-1 gap-2">
-                      {lista.map((s) => {
-                        const marcado = sintomasMarcados.has(s.id_sintoma)
-                        return (
-                          <label
-                            key={s.id_sintoma}
-                            className={classes(
-                              'flex items-start gap-2.5 rounded-xl border p-2.5 text-xs cursor-pointer transition',
-                              marcado
-                                ? s.alerta_urgencia
-                                  ? 'border-red-600 bg-red-600 text-white font-bold shadow-sm'
-                                  : 'border-teal-600 bg-teal-50 text-teal-950 font-semibold'
-                                : 'border-slate-200 bg-white text-slate-800 hover:border-slate-300',
-                            )}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={marcado}
-                              onChange={() => alternarSintoma(s.id_sintoma)}
-                              className="mt-0.5 h-4 w-4 rounded"
-                            />
-                            <span className="leading-snug">{s.nome_sintoma}</span>
-                          </label>
-                        )
-                      })}
-                    </div>
+                      <ChevronDown className={classes('h-4 w-4 text-slate-400 transition', aberto && 'rotate-180')} />
+                    </button>
+                    {aberto && (
+                      <div className="grid gap-2 border-t border-slate-100 bg-white p-3">
+                        {lista.map((s) => {
+                          const marcado = sintomasMarcados.has(s.id_sintoma)
+                          return (
+                            <button
+                              key={s.id_sintoma}
+                              type="button"
+                              onClick={() => alternarSintoma(s.id_sintoma)}
+                              aria-pressed={marcado}
+                              className={classes(
+                                'flex min-h-12 w-full cursor-pointer items-center gap-3 rounded-xl border px-3.5 py-3 text-left text-sm transition active:scale-[0.99]',
+                                marcado
+                                  ? s.alerta_urgencia
+                                    ? 'border-red-400 bg-red-50 font-semibold text-red-900 ring-2 ring-red-200'
+                                    : 'border-brand bg-brand-soft font-semibold text-ink ring-2 ring-brand/20'
+                                  : 'border-slate-200 text-slate-700 hover:border-slate-300',
+                              )}
+                            >
+                              <span
+                                className={classes(
+                                  'flex h-5 w-5 shrink-0 items-center justify-center rounded-md border',
+                                  marcado ? (s.alerta_urgencia ? 'border-red-500 bg-red-500 text-white' : 'border-brand bg-brand text-white') : 'border-slate-300',
+                                )}
+                              >
+                                {marcado && <Check className="h-3 w-3" strokeWidth={3} />}
+                              </span>
+                              <span className="leading-snug">{s.nome_sintoma}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
                 )
               })}
             </div>
-
-            {/* Campo Obrigatório RN-002 / RN-003: Medicações Contínuas / Últimas 48h */}
-            <div className="rounded-2xl border-2 border-amber-300 bg-amber-50/70 p-4 space-y-2.5">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <label className="flex items-center gap-1.5 text-xs font-extrabold text-amber-950">
-                  <Pill className="h-4 w-4 text-amber-700" />
-                  <span>
-                    Medicações Contínuas ou Administradas nas Últimas 48h (Obrigatório)
-                  </span>
-                </label>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setMedicamentoContinuo(
-                      'Nenhum medicamento contínuo; nada administrado nas últimas 48h',
-                    )
-                  }
-                  className="rounded-lg bg-amber-200/80 hover:bg-amber-300 px-2.5 py-1 text-[11px] font-bold text-amber-950 cursor-pointer"
-                >
-                  Preencher: &quot;Nenhum medicamento&quot;
-                </button>
-              </div>
-              <input
-                type="text"
-                required
-                value={medicamentoContinuo}
-                onChange={(e) => setMedicamentoContinuo(e.target.value)}
-                placeholder="Informe nome, dose e horário de qualquer remédio dado em casa (ou clique em Nenhum)"
-                className="w-full rounded-xl border border-amber-400 bg-white px-3 py-2.5 text-xs text-slate-900"
-              />
-            </div>
-
-            {/* Bioindicadores */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Urina e Fezes
-                </label>
-                <input
-                  type="text"
-                  value={aspectoUrinaFezes}
-                  onChange={(e) => setAspectoUrinaFezes(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs text-slate-900"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Apetite e Peso
-                </label>
-                <input
-                  type="text"
-                  value={alteracaoPesoApetite}
-                  onChange={(e) => setAlteracaoPesoApetite(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs text-slate-900"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Ingestão de Água
-                </label>
-                <input
-                  type="text"
-                  value={ingestaoHidrica}
-                  onChange={(e) => setIngestaoHidrica(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs text-slate-900"
-                />
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setPasso(2)}
-                className="flex items-center gap-1.5 rounded-xl border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                <span>Voltar</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (medicamentoContinuo.trim().length < 2) {
-                    setErroForm(
-                      'Por segurança farmacológica, informe as medicações das últimas 48h ou clique em "Nenhum medicamento".',
-                    )
-                    return
-                  }
-                  setErroForm(null)
-                  setPasso(4)
-                }}
-                className="flex items-center gap-2 rounded-xl bg-teal-700 hover:bg-teal-600 px-5 py-2.5 text-xs font-extrabold text-white shadow cursor-pointer"
-              >
-                <span>Avançar para Relato Livre</span>
-                <ArrowRight className="h-4 w-4" />
-              </button>
-            </div>
-          </section>
+            <Navegacao onVoltar={() => setPasso(3)} onAvancar={() => validarEAvancar(5)} />
+          </CartaoPasso>
         )}
 
-        {/* PASSO 4 — RELATO LIVRE COM DETECÇÃO DE PALAVRAS CRÍTICAS E SUBMISSÃO */}
-        {passo === 4 && (
-          <form
-            onSubmit={handleSubmeterTriagem}
-            className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm space-y-4"
-          >
-            <div>
-              <h2 className="text-base font-extrabold text-slate-900">
-                Passo 4 · Conte com suas palavras o que está acontecendo
-              </h2>
-              <p className="text-xs text-slate-600">
-                Descreva quando começou, como evoluiu e qualquer detalhe que possa ajudar o
-                veterinário.
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Há quanto tempo começou? (Tempo de evolução)
+        {/* ===== PASSO 5 · REMÉDIOS E BIOINDICADORES ===== */}
+        {passo === 5 && (
+          <CartaoPasso titulo="Remédios e bioindicadores" subtitulo="Informação essencial para a segurança de nosso paciente.">
+            <div className="space-y-3 rounded-2xl border border-amber-200 bg-amber-50/60 p-4">
+              <label htmlFor="meds" className="flex items-center gap-2 text-sm font-bold text-ink">
+                <Pill className="h-4 w-4 text-amber-600" />
+                Remédios em uso ou dados nas últimas 48h
               </label>
+              <button
+                type="button"
+                onClick={() => setMedicamentoContinuo('Nenhum medicamento contínuo; nada administrado nas últimas 48h')}
+                className={classes(
+                  'flex min-h-12 w-full cursor-pointer items-center gap-3 rounded-xl border px-3.5 py-3 text-left text-sm transition',
+                  medicamentoContinuo.startsWith('Nenhum medicamento')
+                    ? 'border-brand bg-brand-soft font-semibold ring-2 ring-brand/20'
+                    : 'border-slate-200 bg-white',
+                )}
+              >
+                <Check className={classes('h-4 w-4', medicamentoContinuo.startsWith('Nenhum medicamento') ? 'text-brand' : 'text-slate-300')} />
+                Nenhum medicamento
+              </button>
               <input
+                id="meds"
                 type="text"
-                required
-                value={tempoEvolucao}
-                onChange={(e) => setTempoEvolucao(e.target.value)}
-                placeholder="Ex: Começou há 2 horas / Desde ontem à noite / Há 3 dias"
-                className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-xs text-slate-900"
+                value={medicamentoContinuo.startsWith('Nenhum medicamento') ? '' : medicamentoContinuo}
+                onChange={(e) => setMedicamentoContinuo(e.target.value)}
+                placeholder="Ou digite: nome, dose e horário"
+                className="input"
               />
             </div>
 
+            <div className="space-y-2">
+              <Opcoes
+                rotulo="Urina e fezes"
+                opcoes={['Urina e fezes normais', 'Fezes moles / diarreia', 'Urina com sangue ou alterada', 'Sem urinar ou sem fezes']}
+                valor={urinaFezes}
+                onChange={setUrinaFezes}
+              />
+              <input value={urinaFezesDet} onChange={(e) => setUrinaFezesDet(e.target.value)} placeholder="Detalhes (opcional)" className="input" />
+            </div>
+            <div className="space-y-2">
+              <Opcoes
+                rotulo="Apetite e peso"
+                opcoes={['Apetite e peso normais', 'Come menos que o normal', 'Não está comendo', 'Come mais que o normal']}
+                valor={apetite}
+                onChange={setApetite}
+              />
+              <input value={apetiteDet} onChange={(e) => setApetiteDet(e.target.value)} placeholder="Detalhes (opcional)" className="input" />
+            </div>
+            <Opcoes
+              rotulo="Água"
+              opcoes={['Bebe água normalmente', 'Bebe muito mais que o normal', 'Bebe menos que o normal']}
+              valor={hidrica}
+              onChange={setHidrica}
+            />
+            <Navegacao onVoltar={() => setPasso(4)} onAvancar={() => validarEAvancar(6)} />
+          </CartaoPasso>
+        )}
+
+        {/* ===== PASSO 6 · RELATO ===== */}
+        {passo === 6 && (
+          <CartaoPasso titulo="Conte com suas palavras" subtitulo="Quando começou e como evoluiu? Qualquer detalhe ajuda.">
+            <Opcoes
+              rotulo="Há quanto tempo começou?"
+              opcoes={['Algumas horas', 'Desde ontem', '2 a 3 dias', 'Mais de uma semana']}
+              valor={tempoEvolucao}
+              onChange={setTempoEvolucao}
+            />
             <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Relato livre do tutor (mínimo 10 caracteres)
+              <label htmlFor="relato" className="mb-2 block text-sm font-semibold text-ink">
+                Relato
               </label>
               <textarea
+                id="relato"
                 rows={5}
-                required
                 value={relatoLivre}
                 onChange={(e) => setRelatoLivre(e.target.value)}
-                placeholder="Ex: Ele vomitou espuma amarela duas vezes hoje cedo, está mais quietinho e recusou a ração..."
-                className="w-full rounded-2xl border border-slate-300 p-3 text-xs text-slate-900 leading-relaxed"
+                placeholder="Ex.: vomitou espuma amarela duas vezes e está mais quieto…"
+                className="input leading-relaxed"
               />
-              <p className="mt-1 text-[11px] text-slate-500">
-                Dica: caso digite termos de risco imediato (como &quot;veneno&quot;,
-                &quot;chumbinho&quot;, &quot;atropelado&quot;, &quot;sangrando muito&quot;,
-                &quot;convulsão&quot;, &quot;não respira&quot; ou &quot;língua roxa&quot;), o
-                painel de emergência será aberto automaticamente.
-              </p>
             </div>
-
-            <div className="flex items-center justify-between gap-3 pt-2">
-              <button
-                type="button"
-                onClick={() => setPasso(3)}
-                className="flex items-center gap-1.5 rounded-xl border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-100 cursor-pointer"
-              >
+            <div className="flex items-center gap-3 pt-2">
+              <button type="button" onClick={() => setPasso(5)} className="btn-ghost h-12 px-4" aria-label="Voltar">
                 <ArrowLeft className="h-4 w-4" />
-                <span>Voltar</span>
               </button>
-              <button
-                type="submit"
-                disabled={enviando}
-                className="flex items-center gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 px-6 py-3 text-xs font-extrabold text-white shadow-lg cursor-pointer"
-              >
+              <button type="button" onClick={enviar} disabled={enviando} className="btn-primary h-12 flex-1 text-base">
                 <Sparkles className="h-4 w-4" />
-                <span>{enviando ? 'Enviando Triagem...' : 'Enviar Triagem Pré-Consulta'}</span>
+                {enviando ? 'Enviando…' : 'Enviar triagem'}
               </button>
             </div>
-          </form>
+          </CartaoPasso>
         )}
 
-        {/* PASSO 5 — CONFIRMAÇÃO E ALERTA DE SEGURANÇA AO TUTOR */}
-        {passo === 5 && (
-          <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-sm space-y-5">
-            <div className="flex items-start gap-3">
-              <div
+        {/* ===== PASSO 7 · CONFIRMAÇÃO ===== */}
+        {passo === 7 && (
+          <section className="card fade-up space-y-5 p-5 sm:p-7">
+            <div className="flex items-start gap-4">
+              <span
                 className={classes(
                   'flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl',
-                  submissaoOut?.urgencia_detectada || resultadoIA?.urgencia_detectada
-                    ? 'bg-red-100 text-red-700'
-                    : 'bg-emerald-100 text-emerald-700',
+                  urgenciaFinal ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-600',
                 )}
               >
-                {submissaoOut?.urgencia_detectada || resultadoIA?.urgencia_detectada ? (
-                  <Siren className="h-6 w-6" />
-                ) : (
-                  <CheckCircle2 className="h-6 w-6" />
-                )}
-              </div>
+                {urgenciaFinal ? <Siren className="h-6 w-6" /> : <CheckCircle2 className="h-6 w-6" />}
+              </span>
               <div>
-                <h2 className="text-lg font-extrabold text-slate-900">
-                  Triagem Pré-Consulta Recebida!
-                </h2>
-                <p className="text-xs text-slate-600">
-                  O médico veterinário de <strong>{ctx.clinica_nome}</strong> já recebeu os dados
-                  de <strong>{ctx.pet.nome}</strong>.
+                <h2 className="text-xl font-extrabold tracking-tight text-ink">Triagem recebida</h2>
+                <p className="mt-0.5 text-sm text-ink-soft">
+                  A equipe de {ctx.clinica_nome} já tem as informações de {ctx.pet.nome}.
                 </p>
               </div>
             </div>
 
-            {/* Orientação de Segurança ao Tutor */}
-            <div
-              className={classes(
-                'rounded-2xl border p-4 space-y-2',
-                submissaoOut?.urgencia_detectada || resultadoIA?.urgencia_detectada
-                  ? 'border-red-300 bg-red-50 text-red-950'
-                  : 'border-teal-200 bg-teal-50/70 text-teal-950',
-              )}
-            >
+            <div className={classes('space-y-2 rounded-2xl p-4 text-sm', urgenciaFinal ? 'bg-red-50 text-red-900' : 'bg-brand-soft text-ink')}>
               <div className="flex items-center justify-between">
-                <span className="text-xs font-extrabold uppercase tracking-wider">
-                  Orientação de Segurança ao Tutor
-                </span>
+                <span className="text-xs font-bold uppercase tracking-wider">Orientação de segurança</span>
                 {resultadoIA?.status_ia === 'pendente' && (
-                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-teal-700">
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-ai">
                     <Clock className="h-3.5 w-3.5 animate-spin" />
-                    Organizando briefing...
+                    organizando…
                   </span>
                 )}
               </div>
-              <p className="text-xs leading-relaxed font-medium">
+              <p className="leading-relaxed">
                 {resultadoIA?.alerta_seguranca_tutor ??
                   submissaoOut?.mensagem_para_tutor ??
-                  'Aguarde ser chamado para o atendimento. Não administre medicamentos por conta própria.'}
+                  'Aguarde ser chamado. Não dê remédios por conta própria.'}
               </p>
             </div>
 
-            {/* Primeiros Socorros Negativos pós-submissão (quando houver urgência) */}
-            {Object.keys(
-              resultadoIA?.primeiros_socorros_negativos ??
-                submissaoOut?.primeiros_socorros_negativos ??
-                {},
-            ).length > 0 && (
-              <div className="rounded-2xl border-2 border-red-500 bg-red-950 text-white p-4 space-y-2.5">
-                <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-red-200">
-                  <ShieldAlert className="h-4 w-4 text-red-400" />
-                  <span>⚠️ O QUE NÃO FAZER AGORA EM CASA</span>
+            {Object.keys(socorros).length > 0 && (
+              <div className="space-y-2 rounded-2xl border-2 border-red-200 bg-white p-4">
+                <div className="flex items-center gap-2 text-sm font-extrabold text-red-700">
+                  <ShieldAlert className="h-4 w-4" />
+                  ⚠️ O QUE NÃO FAZER AGORA EM CASA
                 </div>
-                {Object.entries(
-                  resultadoIA?.primeiros_socorros_negativos ??
-                    submissaoOut?.primeiros_socorros_negativos ??
-                    {},
-                ).map(([cat, texto]) => (
-                  <div key={cat} className="rounded-xl bg-red-900/70 border border-red-700 p-3">
-                    <div className="text-[11px] font-bold text-red-200 uppercase">
-                      {ROTULO_CATEGORIA[cat] ?? cat}
-                    </div>
-                    <p className="mt-0.5 text-xs text-white leading-relaxed">{texto}</p>
+                {Object.entries(socorros).map(([cat, texto]) => (
+                  <div key={cat} className="rounded-xl bg-red-50 p-3">
+                    <div className="text-[11px] font-bold uppercase tracking-wide text-red-700">{ROTULO_CATEGORIA[cat] ?? cat}</div>
+                    <p className="mt-0.5 text-sm leading-relaxed text-red-950">{texto}</p>
                   </div>
                 ))}
               </div>
             )}
 
-            <div className="flex flex-wrap gap-2.5">
-              <button
-                type="button"
-                onClick={() => setModalEmergenciaAberto(true)}
-                className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 hover:bg-red-500 px-4 py-3 text-xs font-extrabold text-white shadow cursor-pointer"
-              >
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button type="button" onClick={abrirEmergencia} className="btn-danger h-12">
                 <Siren className="h-4 w-4" />
-                <span>Acionar Emergência / Resgate GPS</span>
+                Acionar emergência
               </button>
-              <a
-                href={ctx.emergencia.rota_clinica.google_maps}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 px-4 py-3 text-xs font-bold text-slate-800"
-              >
-                <Navigation className="h-4 w-4 text-teal-700" />
-                <span>Rota no Google Maps</span>
+              <a href={ctx.emergencia.rota_clinica.google_maps} target="_blank" rel="noopener noreferrer" className="btn-ghost h-12">
+                <Navigation className="h-4 w-4 text-brand" />
+                Rota até a clínica
               </a>
             </div>
           </section>
         )}
+
+        <p className="flex items-center justify-center gap-1.5 pt-2 text-[11px] text-ink-soft">
+          <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+          Seus dados são protegidos pela LGPD · o TrIAgem não faz diagnóstico
+        </p>
       </main>
 
-      {/* =====================================================================
-          MODAL / PAINEL VERMELHO DE INTERCEPÇÃO IMEDIATA (DISJUNTOR RN-001 v2.0)
-         ===================================================================== */}
-      {modalEmergenciaAberto && (
-        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5 overflow-y-auto">
-          <div className="w-full max-w-lg rounded-3xl border-2 border-red-500 bg-gradient-to-b from-red-950 via-slate-950 to-slate-950 text-white p-5 sm:p-6 shadow-2xl space-y-4 my-auto">
-            {/* Cabeçalho do Disjuntor */}
-            <div className="flex items-start justify-between gap-3">
+      {/* ===================================================================
+          DISJUNTOR DE EMERGÊNCIA RN-001 v2.0
+         =================================================================== */}
+      {modalAberto && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto bg-slate-900/70 backdrop-blur-sm sm:items-center sm:p-4">
+          <div role="dialog" aria-modal="true" aria-label="Emergência" className="fade-up w-full max-w-lg overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:rounded-3xl">
+            <div className="flex items-start justify-between gap-3 bg-red-600 px-5 py-4 text-white">
               <div className="flex items-start gap-3">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-red-600 text-white shadow-lg emergency-pulse">
-                  <Siren className="h-6 w-6" />
-                </div>
+                <Siren className="mt-0.5 h-6 w-6 shrink-0" />
                 <div>
-                  <span className="inline-block rounded-full bg-red-500/30 border border-red-400/40 px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wider text-red-200">
-                    Disjuntor de Emergência RN-001 v2.0
-                  </span>
-                  <h2 className="mt-1 text-lg font-extrabold text-white leading-tight">
-                    Sinais de Risco Imediato à Vida Detectados!
-                  </h2>
+                  <h2 className="text-lg font-extrabold leading-tight">Risco imediato à vida</h2>
+                  <p className="mt-0.5 text-sm text-red-100">
+                    {gatilhos.motivos.length > 0 ? gatilhos.motivos.slice(0, 2).join(' · ') : 'Siga as orientações abaixo e acione a equipe.'}
+                  </p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setModalEmergenciaAberto(false)}
-                className="rounded-lg border border-red-500/40 bg-red-950/60 px-2.5 py-1 text-xs font-bold text-red-200 hover:bg-red-900 cursor-pointer"
-              >
+              <button type="button" onClick={() => setModalAberto(false)} className="shrink-0 cursor-pointer rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold hover:bg-white/25">
                 Fechar
               </button>
             </div>
 
-            {/* Motivos que dispararam o disjuntor */}
-            {gatilhos.motivos.length > 0 && (
-              <div className="rounded-2xl border border-red-500/40 bg-red-950/60 p-3 text-xs">
-                <div className="font-bold text-red-200 mb-1">Gatilhos identificados:</div>
-                <ul className="list-disc list-inside space-y-0.5 text-red-100">
-                  {gatilhos.motivos.map((m, i) => (
-                    <li key={i}>{m}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {/* a) Card de Primeiros Socorros Negativos ("⚠️ O QUE NÃO FAZER AGORA EM CASA") */}
-            <div className="rounded-2xl border-2 border-amber-400 bg-amber-950/80 p-4 space-y-2.5">
-              <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-amber-300">
-                <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
-                <span>⚠️ O QUE NÃO FAZER AGORA EM CASA</span>
-              </div>
-              {categoriasAtivas.map((cat) => {
-                const instrucao =
-                  ctx.emergencia.primeiros_socorros_negativos[cat] ??
-                  ctx.emergencia.primeiros_socorros_negativos.GERAL
-                return (
-                  <div
-                    key={cat}
-                    className="rounded-xl bg-slate-950/80 border border-amber-500/30 p-3 space-y-1"
-                  >
-                    <div className="text-[11px] font-extrabold uppercase text-amber-300">
-                      {ROTULO_CATEGORIA[cat] ?? cat}
-                    </div>
-                    <p className="text-xs text-amber-50 leading-relaxed font-medium">
-                      {instrucao}
+            <div className="max-h-[75vh] space-y-4 overflow-y-auto p-5">
+              {/* a) O QUE NÃO FAZER */}
+              <div className="space-y-2 rounded-2xl border-2 border-amber-300 bg-amber-50 p-4">
+                <div className="flex items-center gap-2 text-sm font-extrabold text-amber-900">
+                  <AlertTriangle className="h-4 w-4" />
+                  ⚠️ O QUE NÃO FAZER AGORA EM CASA
+                </div>
+                {categoriasAtivas.map((cat) => (
+                  <div key={cat} className="rounded-xl bg-white p-3">
+                    <div className="text-[11px] font-bold uppercase tracking-wide text-amber-700">{ROTULO_CATEGORIA[cat] ?? cat}</div>
+                    <p className="mt-0.5 text-sm leading-relaxed text-slate-800">
+                      {ctx.emergencia.primeiros_socorros_negativos[cat] ?? ctx.emergencia.primeiros_socorros_negativos.GERAL}
                     </p>
                   </div>
-                )
-              })}
-            </div>
+                ))}
+              </div>
 
-            {/* b) Checkbox de ciência de risco de morte imediato (auditoria jurídica) */}
-            <label className="flex items-start gap-3 rounded-2xl border border-red-400/50 bg-red-900/40 p-3.5 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={cienteRiscoMorte}
-                onChange={(e) => {
-                  setCienteRiscoMorte(e.target.checked)
+              {/* b) Ciência */}
+              <button
+                type="button"
+                onClick={() => {
+                  setCienteRiscoMorte((v) => !v)
                   setErroEmergencia(null)
                 }}
-                className="mt-0.5 h-4 w-4 rounded border-red-300 text-red-600"
-              />
-              <span className="text-xs font-bold text-red-100 leading-snug">
-                Estou ciente de que os sinais relatados indicam risco imediato de morte para{' '}
-                <strong>{ctx.pet.nome}</strong> e que o atendimento presencial não pode esperar.
-              </span>
-            </label>
+                aria-pressed={cienteRiscoMorte}
+                className={classes(
+                  'flex w-full cursor-pointer items-start gap-3 rounded-2xl border p-4 text-left text-sm transition',
+                  cienteRiscoMorte ? 'border-red-400 bg-red-50' : 'border-slate-200 bg-white',
+                )}
+              >
+                <span className={classes('mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border', cienteRiscoMorte ? 'border-red-500 bg-red-500 text-white' : 'border-slate-300')}>
+                  {cienteRiscoMorte && <Check className="h-3 w-3" strokeWidth={3} />}
+                </span>
+                <span className="font-medium text-ink">
+                  Estou ciente de que há risco imediato de morte para <strong>{ctx.pet.nome}</strong> e de que o
+                  atendimento presencial não pode esperar.
+                </span>
+              </button>
 
-            {erroEmergencia && (
-              <div className="rounded-xl border border-red-400 bg-red-950 p-3 text-xs font-bold text-red-200">
-                {erroEmergencia}
-              </div>
-            )}
+              {erroEmergencia && <p className="rounded-xl bg-red-50 p-3 text-sm font-medium text-red-700">{erroEmergencia}</p>}
 
-            {/* Confirmação quando a emergência já foi registrada no servidor */}
-            {emergenciaRegistrada && (
-              <div className="rounded-2xl border border-emerald-400 bg-emerald-950/90 p-3.5 space-y-2 text-xs">
-                <div className="font-extrabold text-emerald-200 flex items-center gap-1.5">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-400" />
-                  <span>{emergenciaRegistrada.mensagem_para_tutor}</span>
-                </div>
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <a
-                    href={emergenciaRegistrada.rota_clinica.google_maps}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-white text-slate-900 px-3 py-1.5 font-extrabold"
-                  >
-                    <Navigation className="h-3.5 w-3.5 text-teal-700" />
-                    Abrir Rota no Google Maps
-                  </a>
-                  <a
-                    href={emergenciaRegistrada.rota_clinica.waze}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-sky-500 text-white px-3 py-1.5 font-extrabold"
-                  >
-                    <ExternalLink className="h-3.5 w-3.5" />
-                    Abrir no Waze
-                  </a>
-                  {emergenciaRegistrada.whatsapp_resgate_url && (
-                    <a
-                      href={emergenciaRegistrada.whatsapp_resgate_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500 text-slate-950 px-3 py-1.5 font-extrabold"
-                    >
-                      <MessageCircle className="h-3.5 w-3.5" />
-                      Enviar Localização no WhatsApp do Plantão
+              {emergenciaRegistrada && (
+                <div className="space-y-3 rounded-2xl bg-emerald-50 p-4 text-sm">
+                  <div className="flex items-start gap-2 font-semibold text-emerald-900">
+                    <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                    {emergenciaRegistrada.mensagem_para_tutor}
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <a href={emergenciaRegistrada.rota_clinica.google_maps} target="_blank" rel="noopener noreferrer" className="btn-ghost">
+                      <Navigation className="h-4 w-4 text-brand" />
+                      Google Maps
                     </a>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* c) Botão 1: ESTOU A CAMINHO */}
-            <button
-              type="button"
-              disabled={acionandoModalidade !== null}
-              onClick={() => acionarEmergenciaAgora('EMERGENCIA_A_CAMINHO')}
-              className="w-full flex items-center justify-center gap-2 rounded-2xl bg-red-600 hover:bg-red-500 disabled:opacity-50 py-3.5 px-4 text-xs sm:text-sm font-extrabold text-white shadow-lg cursor-pointer transition"
-            >
-              <Siren className="h-5 w-5 shrink-0" />
-              <span>
-                {acionandoModalidade === 'EMERGENCIA_A_CAMINHO'
-                  ? 'Avisando Equipe de Emergência...'
-                  : '🚨 ESTOU A CAMINHO! Avisar Equipe de Emergência Agora'}
-              </span>
-            </button>
-
-            {/* d) Botão 2: SOLICITAR VEÍCULO DE RESGATE DA CLÍNICA (Enviar Meu GPS) */}
-            {ctx.emergencia.possui_veiculo_resgate && (
-              <div className="rounded-2xl border border-slate-700 bg-slate-900/90 p-3.5 space-y-2.5">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={enderecoManual}
-                    onChange={(e) => setEnderecoManual(e.target.value)}
-                    placeholder="Coordenadas GPS ou digite seu endereço completo para resgate..."
-                    className="flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-white placeholder-slate-400"
-                  />
-                  <button
-                    type="button"
-                    disabled={capturandoGps}
-                    onClick={() => capturarGeolocalizacao()}
-                    className="shrink-0 rounded-xl border border-teal-500/40 bg-teal-500/20 hover:bg-teal-500/30 px-3 py-2 text-xs font-bold text-teal-200 cursor-pointer"
-                  >
-                    {capturandoGps ? 'Obtendo GPS...' : 'Usar Meu GPS'}
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  disabled={acionandoModalidade !== null}
-                  onClick={() => acionarEmergenciaAgora('RESGATE_SOLICITADO')}
-                  className="w-full flex items-center justify-center gap-2 rounded-2xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 py-3 px-4 text-xs sm:text-sm font-extrabold text-slate-950 shadow-lg cursor-pointer transition"
-                >
-                  <Ambulance className="h-5 w-5 shrink-0" />
-                  <span>
-                    {acionandoModalidade === 'RESGATE_SOLICITADO'
-                      ? 'Solicitando Veículo de Resgate...'
-                      : '🚑 SOLICITAR VEÍCULO DE RESGATE DA CLÍNICA (Enviar Meu GPS)'}
-                  </span>
-                </button>
-              </div>
-            )}
-
-            {/* e) Trava de Clínica Fechada / Redirecionamento 24h */}
-            <div className="pt-1 space-y-2">
-              {clinicaFechadaAgora && (
-                <div className="rounded-xl bg-amber-500/20 border border-amber-400/50 p-2.5 text-center text-xs font-bold text-amber-200">
-                  Atenção: esta clínica encerrou o expediente ({ctx.emergencia.horario_fechamento}
-                  ). Dirija-se imediatamente a um Hospital Veterinário 24h:
+                    <a href={emergenciaRegistrada.rota_clinica.waze} target="_blank" rel="noopener noreferrer" className="btn-ghost">
+                      <ExternalLink className="h-4 w-4 text-brand" />
+                      Waze
+                    </a>
+                    {emergenciaRegistrada.whatsapp_resgate_url && (
+                      <a href={emergenciaRegistrada.whatsapp_resgate_url} target="_blank" rel="noopener noreferrer" className="btn-success sm:col-span-2">
+                        <MessageCircle className="h-4 w-4" />
+                        Enviar localização no WhatsApp do plantão
+                      </a>
+                    )}
+                  </div>
                 </div>
               )}
-              <a
-                href={ctx.emergencia.url_hospital_24h}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full flex items-center justify-center gap-2 rounded-2xl border border-slate-600 bg-slate-800 hover:bg-slate-700 py-3 px-4 text-xs font-bold text-slate-100 transition"
+
+              {clinicaFechada && (
+                <p className="rounded-xl bg-slate-100 p-3 text-sm text-slate-700">
+                  Esta clínica fechou às {ctx.emergencia.horario_fechamento}. Procure um hospital 24h.
+                </p>
+              )}
+
+              {/* c) Estou a caminho */}
+              <button
+                type="button"
+                disabled={acionando !== null}
+                onClick={() => acionar('EMERGENCIA_A_CAMINHO')}
+                className="btn-danger min-h-14 w-full text-base"
               >
-                <MapPin className="h-4 w-4 text-red-400 shrink-0" />
-                <span>📍 Buscar Hospital Veterinário 24h Mais Próximo no Google Maps</span>
+                <Siren className="h-5 w-5 shrink-0" />
+                {acionando === 'EMERGENCIA_A_CAMINHO' ? 'Avisando equipe…' : '🚨 ESTOU A CAMINHO! Avisar Equipe de Emergência Agora'}
+              </button>
+
+              {/* d) Resgate */}
+              {ctx.emergencia.possui_veiculo_resgate && (
+                <div className="space-y-2.5 rounded-2xl border border-slate-200 p-3.5">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={enderecoManual}
+                      onChange={(e) => setEnderecoManual(e.target.value)}
+                      placeholder="Seu endereço ou use o GPS"
+                      className="input"
+                    />
+                    <button type="button" disabled={capturandoGps} onClick={() => capturarGps()} className="btn-ghost shrink-0">
+                      <MapPin className="h-4 w-4 text-brand" />
+                      {capturandoGps ? 'Obtendo…' : 'GPS'}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={acionando !== null}
+                    onClick={() => acionar('RESGATE_SOLICITADO')}
+                    className="btn min-h-14 w-full bg-amber-500 text-base text-slate-950 hover:bg-amber-400"
+                  >
+                    <Ambulance className="h-5 w-5 shrink-0" />
+                    {acionando === 'RESGATE_SOLICITADO' ? 'Solicitando resgate…' : '🚑 SOLICITAR VEÍCULO DE RESGATE DA CLÍNICA (Enviar Meu GPS)'}
+                  </button>
+                </div>
+              )}
+
+              {/* e) Hospital 24h */}
+              <a href={ctx.emergencia.url_hospital_24h} target="_blank" rel="noopener noreferrer" className="btn-ghost min-h-12 w-full">
+                <MapPin className="h-4 w-4 text-red-500" />
+                📍 Buscar Hospital Veterinário 24h Mais Próximo no Google Maps
               </a>
             </div>
           </div>

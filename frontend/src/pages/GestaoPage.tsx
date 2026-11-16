@@ -1,296 +1,270 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Activity,
   AlertTriangle,
   Ambulance,
-  BarChart3,
+  ChevronDown,
   Clock,
-  DollarSign,
-  Percent,
   RefreshCw,
+  ShieldCheck,
   Siren,
   TrendingUp,
-  Users,
+  Wallet,
 } from 'lucide-react'
 import { api } from '../lib/api'
 import { classes, formatarMoeda, formatarNumero } from '../lib/format'
 import { MANCHESTER } from '../lib/manchester'
 import type { Metricas } from '../types'
 
+const PERIODOS = [7, 14, 30]
+
+function dataCurta(iso: string): string {
+  const [, m, d] = iso.split('-')
+  return `${d}/${m}`
+}
+
+function Hero({
+  icone,
+  titulo,
+  valor,
+  legenda,
+  destaque = false,
+  tom,
+}: {
+  icone: React.ReactNode
+  titulo: string
+  valor: string
+  legenda: string
+  destaque?: boolean
+  tom: string
+}) {
+  return (
+    <div
+      className={classes(
+        'rounded-2xl p-5',
+        destaque ? 'bg-brand-gradient text-white shadow-lg' : 'card',
+      )}
+    >
+      <div className="flex items-center justify-between">
+        <span className={classes('text-sm font-medium', destaque ? 'text-white/85' : 'text-ink-soft')}>{titulo}</span>
+        <span className={classes('flex h-9 w-9 items-center justify-center rounded-xl', destaque ? 'bg-white/20 text-white' : tom)}>{icone}</span>
+      </div>
+      <div className={classes('mt-3 text-3xl font-extrabold tracking-tight', destaque ? 'text-white' : 'text-ink')}>{valor}</div>
+      <p className={classes('mt-1.5 text-xs leading-relaxed', destaque ? 'text-white/80' : 'text-ink-soft')}>{legenda}</p>
+    </div>
+  )
+}
+
 export function GestaoPage() {
-  const [metricas, setMetricas] = useState<Metricas | null>(null)
-  const [diasPeriodo, setDiasPeriodo] = useState<number>(30)
+  const [m, setM] = useState<Metricas | null>(null)
+  const [dias, setDias] = useState(30)
   const [carregando, setCarregando] = useState(true)
   const [erro, setErro] = useState<string | null>(null)
 
-  const carregarMetricas = useCallback(async () => {
+  const carregar = useCallback(async () => {
     setCarregando(true)
     setErro(null)
     try {
       const ate = new Date(Date.now() + 24 * 3600 * 1000).toISOString()
-      const de = new Date(Date.now() - diasPeriodo * 24 * 3600 * 1000).toISOString()
-      const dados = await api<Metricas>('/dashboard/metricas', {
-        query: { de, ate },
-      })
-      setMetricas(dados)
-    } catch (err) {
-      setErro((err as Error).message)
+      const de = new Date(Date.now() - dias * 24 * 3600 * 1000).toISOString()
+      setM(await api<Metricas>('/dashboard/metricas', { query: { de, ate } }))
+    } catch (e) {
+      setErro((e as Error).message)
     } finally {
       setCarregando(false)
     }
-  }, [diasPeriodo])
+  }, [dias])
 
   useEffect(() => {
-    carregarMetricas()
-  }, [carregarMetricas])
+    carregar()
+  }, [carregar])
 
-  const serieComMovimento =
-    metricas?.serie_diaria.filter((d) => d.consultas > 0 || d.minutos_economizados > 0) ?? []
-  const maxMinDia = Math.max(
-    1,
-    ...serieComMovimento.map((d) => d.minutos_economizados),
-  )
+  const ultimos = useMemo(() => (m ? m.serie_diaria.slice(-14) : []), [m])
+  const maxDia = Math.max(1, ...ultimos.map((d) => d.minutos_economizados))
+  const totalDiasUteis = ultimos.reduce((s, d) => s + d.consultas, 0)
 
   return (
-    <main className="mx-auto max-w-7xl px-4 py-6 space-y-6">
-      {/* Cabeçalho Executivo B2B */}
-      <section className="flex flex-wrap items-center justify-between gap-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+    <main className="mx-auto max-w-6xl space-y-8 px-4 py-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-teal-50 border border-teal-200 px-2.5 py-0.5 text-[11px] font-extrabold uppercase tracking-wider text-teal-800">
-            <BarChart3 className="h-3.5 w-3.5" />
-            Business Intelligence &amp; ROI Auditável (RN-003)
-          </span>
-          <h1 className="mt-1 text-xl font-extrabold text-slate-900">
-            Dashboard Executivo B2B do Gestor
-          </h1>
-          <p className="text-xs text-slate-600">
-            Economia real de tempo aferida por timestamps UTC, capacidade extra de consultas,
-            receita adicional potencial e distribuição de risco Manchester.
-          </p>
+          <h1 className="text-2xl font-extrabold tracking-tight text-ink">Retorno do TrIAgem</h1>
+          <p className="mt-1 text-sm text-ink-soft">Quanto tempo e dinheiro a triagem devolveu à clínica.</p>
         </div>
-
         <div className="flex items-center gap-2">
-          {[7, 14, 30].map((d) => (
-            <button
-              key={d}
-              type="button"
-              onClick={() => setDiasPeriodo(d)}
-              className={classes(
-                'rounded-xl px-3 py-2 text-xs font-bold border transition cursor-pointer',
-                diasPeriodo === d
-                  ? 'bg-slate-900 text-white border-slate-900'
-                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50',
-              )}
-            >
-              Últimos {d} dias
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={carregarMetricas}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700 cursor-pointer"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            <span>Atualizar</span>
+          <div className="inline-flex rounded-xl bg-slate-100 p-1">
+            {PERIODOS.map((d) => (
+              <button key={d} type="button" onClick={() => setDias(d)} className={classes('cursor-pointer rounded-lg px-3.5 py-1.5 text-xs font-semibold transition', dias === d ? 'bg-white text-ink shadow-sm' : 'text-ink-soft hover:text-ink')}>
+                {d} dias
+              </button>
+            ))}
+          </div>
+          <button type="button" onClick={carregar} title="Atualizar" aria-label="Atualizar" className="btn-ghost h-10 w-10 p-0">
+            <RefreshCw className={classes('h-4 w-4', carregando && 'animate-spin')} />
           </button>
         </div>
-      </section>
+      </div>
 
       {erro && (
-        <div className="rounded-2xl border border-red-300 bg-red-50 p-4 text-xs font-semibold text-red-800 flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
-          <span>{erro}</span>
+        <div className="flex items-center gap-2 rounded-xl bg-red-50 p-3.5 text-sm text-red-700 ring-1 ring-red-200">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          {erro}
         </div>
       )}
 
-      {carregando || !metricas ? (
-        <div className="rounded-3xl border border-slate-200 bg-white p-12 text-center text-sm text-slate-500">
-          Calculando indicadores executivos de ROI...
-        </div>
+      {!m ? (
+        <div className="card p-12 text-center text-sm text-ink-soft">{carregando ? 'Calculando indicadores…' : 'Sem dados.'}</div>
       ) : (
         <>
-          {/* 5 CARDS PRINCIPAIS DE KPI E ROI */}
-          <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-2">
-              <div className="flex items-center justify-between text-xs font-bold text-slate-500">
-                <span>Horas Economizadas</span>
-                <Clock className="h-4 w-4 text-teal-600" />
-              </div>
-              <div className="text-2xl font-extrabold text-slate-900">
-                {formatarNumero(metricas.horas_economizadas, 1)} h
-              </div>
-              <p className="text-[11px] text-slate-500">
-                {formatarNumero(metricas.minutos_economizados, 0)} min totais vs. benchmark de{' '}
-                {metricas.benchmark_minutos} min
-              </p>
-            </div>
-
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-2">
-              <div className="flex items-center justify-between text-xs font-bold text-slate-500">
-                <span>Capacidade Extra</span>
-                <TrendingUp className="h-4 w-4 text-emerald-600" />
-              </div>
-              <div className="text-2xl font-extrabold text-emerald-700">
-                +{formatarNumero(metricas.capacidade_extra_atendimentos, 1)} consultas
-              </div>
-              <p className="text-[11px] text-slate-500">
-                Duração média real:{' '}
-                {metricas.duracao_media_minutos != null
-                  ? `${formatarNumero(metricas.duracao_media_minutos, 1)} min`
-                  : '—'}
-              </p>
-            </div>
-
-            <div className="rounded-3xl border-2 border-emerald-500 bg-gradient-to-br from-emerald-950 to-teal-950 text-white p-5 shadow-md space-y-2">
-              <div className="flex items-center justify-between text-xs font-bold text-emerald-300">
-                <span>Receita Adicional Potencial</span>
-                <DollarSign className="h-4 w-4 text-emerald-400" />
-              </div>
-              <div className="text-2xl font-extrabold text-white">
-                {formatarMoeda(metricas.receita_adicional_potencial)}
-              </div>
-              <p className="text-[11px] text-emerald-200">
-                Ticket médio base: {formatarMoeda(metricas.ticket_medio_consulta)} / consulta
-              </p>
-            </div>
-
-            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm space-y-2">
-              <div className="flex items-center justify-between text-xs font-bold text-slate-500">
-                <span>Taxa de Adesão dos Tutores</span>
-                <Percent className="h-4 w-4 text-teal-600" />
-              </div>
-              <div className="text-2xl font-extrabold text-slate-900">
-                {formatarNumero(metricas.taxa_adesao_pct, 1)}%
-              </div>
-              <p className="text-[11px] text-slate-500">
-                {metricas.triagens_realizadas} triagens de {metricas.total_agendadas} agendadas
-              </p>
-            </div>
-
-            <div className="rounded-3xl border border-red-200 bg-red-50/60 p-5 shadow-sm space-y-2">
-              <div className="flex items-center justify-between text-xs font-bold text-red-800">
-                <span>Emergências &amp; Resgates</span>
-                <Siren className="h-4 w-4 text-red-600" />
-              </div>
-              <div className="text-2xl font-extrabold text-red-700">
-                {metricas.urgencias_detectadas} críticas
-              </div>
-              <p className="text-[11px] text-red-900 flex items-center gap-2">
-                <span>{metricas.emergencias_acionadas} em deslocamento</span> ·
-                <span className="inline-flex items-center gap-1 font-bold">
-                  <Ambulance className="h-3 w-3" />
-                  {metricas.resgates_solicitados} resgates GPS
-                </span>
-              </p>
-            </div>
+          {/* 1 · Hero cards */}
+          <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Hero
+              destaque tom=""
+              icone={<Wallet className="h-5 w-5" />}
+              titulo="Receita adicional potencial"
+              valor={formatarMoeda(m.receita_adicional_potencial)}
+              legenda={`${formatarNumero(m.capacidade_extra_atendimentos, 1)} consultas extras × ticket médio de ${formatarMoeda(m.ticket_medio_consulta)}.`}
+            />
+            <Hero
+              tom="bg-brand-soft text-brand"
+              icone={<Clock className="h-5 w-5" />}
+              titulo="Horas economizadas"
+              valor={`${formatarNumero(m.horas_economizadas, 1)} h`}
+              legenda={`${formatarNumero(m.minutos_economizados, 0)} min devolvidos à equipe frente ao benchmark de ${m.benchmark_minutos} min.`}
+            />
+            <Hero
+              tom="bg-ai-soft text-ai"
+              icone={<TrendingUp className="h-5 w-5" />}
+              titulo="Capacidade extra"
+              valor={`+${formatarNumero(m.capacidade_extra_atendimentos, 1)}`}
+              legenda="Novas consultas que cabem no tempo economizado."
+            />
+            <Hero
+              tom="bg-emerald-50 text-emerald-600"
+              icone={<ShieldCheck className="h-5 w-5" />}
+              titulo="Adesão e segurança"
+              valor={`${formatarNumero(m.taxa_adesao_pct, 0)}%`}
+              legenda={`${m.triagens_realizadas} de ${m.total_agendadas} tutores responderam · ${m.urgencias_detectadas} emergências sinalizadas, ${m.resgates_solicitados} resgates.`}
+            />
           </section>
 
-          {/* GRÁFICO DE DISTRIBUIÇÃO DE RISCO MANCHESTER + SÉRIE HISTÓRICA DIÁRIA */}
-          <section className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Distribuição de Risco Manchester */}
-            <div className="lg:col-span-5 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+          {/* 2 · Antes vs. Com TrIAgem */}
+          <section className="card p-6">
+            <h2 className="text-base font-bold text-ink">Tempo por consulta: antes vs. com TrIAgem</h2>
+            <div className="mt-5 space-y-4">
               <div>
-                <h2 className="text-base font-extrabold text-slate-900">
-                  Distribuição de Risco · Protocolo de Manchester
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Classificação das {metricas.triagens_realizadas} triagens preenchidas no período
-                </p>
+                <div className="mb-1.5 flex justify-between text-sm">
+                  <span className="font-medium text-ink-soft">Consulta tradicional (anamnese no consultório)</span>
+                  <span className="font-bold text-ink">{m.benchmark_minutos} min</span>
+                </div>
+                <div className="h-4 rounded-full bg-slate-100">
+                  <div className="h-full w-full rounded-full bg-slate-300" />
+                </div>
               </div>
+              <div>
+                <div className="mb-1.5 flex justify-between text-sm">
+                  <span className="font-semibold text-brand">Com TrIAgem (média real medida)</span>
+                  <span className="font-bold text-brand">
+                    {m.duracao_media_minutos != null ? `${formatarNumero(m.duracao_media_minutos, 1)} min` : '—'}
+                  </span>
+                </div>
+                <div className="h-4 rounded-full bg-slate-100">
+                  <div
+                    className="bg-brand-gradient h-full rounded-full transition-all"
+                    style={{ width: `${m.duracao_media_minutos != null ? Math.min(100, (m.duracao_media_minutos / m.benchmark_minutos) * 100) : 0}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+            {m.duracao_media_minutos != null && (
+              <p className="mt-5 inline-flex items-center gap-2 rounded-xl bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800">
+                <TrendingUp className="h-4 w-4" />
+                {formatarNumero(Math.max(0, m.benchmark_minutos - m.duracao_media_minutos), 1)} minutos poupados em cada atendimento
+              </p>
+            )}
+          </section>
 
-              <div className="space-y-3.5">
-                {metricas.distribuicao_risco.map((item) => {
-                  const estilo = MANCHESTER[item.cor]
+          {/* 3 · Gráficos */}
+          <section className="grid gap-6 lg:grid-cols-2">
+            {/* Manchester */}
+            <div className="card p-6">
+              <h2 className="text-base font-bold text-ink">Perfil clínico dos atendimentos</h2>
+              <p className="mt-0.5 text-xs text-ink-soft">Classificação de risco (Protocolo de Manchester) das {m.triagens_realizadas} triagens.</p>
+              <ul className="mt-5 space-y-4">
+                {m.distribuicao_risco.map((r) => {
+                  const e = MANCHESTER[r.cor]
                   return (
-                    <div key={item.cor} className="space-y-1.5">
-                      <div className="flex items-center justify-between text-xs">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={classes('h-3 w-3 rounded-full', estilo.ponto)}
-                          />
-                          <span className="font-extrabold text-slate-800">
-                            {estilo.cor} — {estilo.rotulo}
-                          </span>
-                        </div>
-                        <span className="font-bold text-slate-700">
-                          {item.quantidade} ({formatarNumero(item.percentual, 1)}%)
+                    <li key={r.cor}>
+                      <div className="mb-1.5 flex items-center justify-between text-sm">
+                        <span className="flex items-center gap-2 font-medium text-ink">
+                          <span className={classes('h-2.5 w-2.5 rounded-full', e.dot)} />
+                          {e.rotulo}
+                        </span>
+                        <span className="text-ink-soft">
+                          <strong className="text-ink">{r.quantidade}</strong> · {formatarNumero(r.percentual, 0)}%
                         </span>
                       </div>
-                      <div className="h-3 w-full rounded-full bg-slate-100 overflow-hidden">
-                        <div
-                          className={classes('h-full rounded-full transition-all', estilo.barra)}
-                          style={{ width: `${Math.max(item.quantidade > 0 ? 6 : 0, item.percentual)}%` }}
-                        />
+                      <div className="h-2.5 rounded-full bg-slate-100">
+                        <div className={classes('h-full rounded-full transition-all', e.barra)} style={{ width: `${r.quantidade > 0 ? Math.max(3, r.percentual) : 0}%` }} />
                       </div>
+                    </li>
+                  )
+                })}
+              </ul>
+              <p className="mt-5 flex items-center gap-2 text-xs text-ink-soft">
+                <Siren className="h-4 w-4 text-red-500" />
+                {m.emergencias_acionadas} emergências acionadas pelo tutor
+                <Ambulance className="ml-2 h-4 w-4 text-amber-500" />
+                {m.resgates_solicitados} resgates
+              </p>
+            </div>
+
+            {/* Evolução diária */}
+            <div className="card p-6">
+              <h2 className="text-base font-bold text-ink">Minutos economizados por dia</h2>
+              <p className="mt-0.5 text-xs text-ink-soft">Últimos 14 dias · {totalDiasUteis} consultas finalizadas.</p>
+
+              <div className="mt-6 flex h-44 items-end gap-1.5" role="img" aria-label="Gráfico de minutos economizados por dia">
+                {ultimos.map((d) => {
+                  const h = d.minutos_economizados > 0 ? Math.max(6, (d.minutos_economizados / maxDia) * 100) : 0
+                  return (
+                    <div key={d.dia} className="group relative flex h-full flex-1 flex-col justify-end">
+                      <div className="pointer-events-none absolute -top-1 left-1/2 z-10 hidden -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-lg bg-ink px-2.5 py-1.5 text-[11px] text-white shadow-lg group-hover:block">
+                        <strong>{dataCurta(d.dia)}</strong> · {formatarNumero(d.minutos_economizados, 0)} min · {d.consultas} {d.consultas === 1 ? 'consulta' : 'consultas'}
+                      </div>
+                      <div className={classes('w-full rounded-t-md transition-all', h > 0 ? 'bg-brand-gradient group-hover:opacity-80' : 'bg-slate-100')} style={{ height: h > 0 ? `${h}%` : '3px' }} />
                     </div>
                   )
                 })}
               </div>
-
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 text-xs text-slate-600 leading-relaxed">
-                <strong>Regra de Governança do ROI:</strong> {metricas.observacao}
-              </div>
-            </div>
-
-            {/* Série Diária de Consultas e Minutos Economizados */}
-            <div className="lg:col-span-7 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <h2 className="text-base font-extrabold text-slate-900">
-                    Evolução Diária de Economia de Tempo (UTC)
-                  </h2>
-                  <p className="text-xs text-slate-500">
-                    {metricas.consultas_finalizadas} consultas finalizadas (
-                    {metricas.consultas_com_triagem} com Triagem Pré-Consulta)
-                  </p>
-                </div>
-                <div className="flex items-center gap-1.5 text-xs font-bold text-teal-700">
-                  <Activity className="h-4 w-4" />
-                  <span>Benchmark: {metricas.benchmark_minutos} min/consulta</span>
-                </div>
+              <div className="mt-2 flex gap-1.5 text-[10px] text-slate-400">
+                {ultimos.map((d, i) => (
+                  <span key={d.dia} className="flex-1 text-center">{i % 2 === 0 ? dataCurta(d.dia) : ''}</span>
+                ))}
               </div>
 
-              {serieComMovimento.length === 0 ? (
-                <div className="p-8 text-center text-xs text-slate-500">
-                  Nenhuma consulta finalizada com economia registrada neste intervalo.
-                </div>
-              ) : (
-                <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
-                  {serieComMovimento
-                    .slice()
-                    .reverse()
-                    .map((dia) => {
-                      const pct = Math.min(100, (dia.minutos_economizados / maxMinDia) * 100)
-                      return (
-                        <div
-                          key={dia.dia}
-                          className="rounded-xl border border-slate-100 bg-slate-50/70 p-3 space-y-1.5"
-                        >
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="font-bold text-slate-800">{dia.dia}</span>
-                            <div className="flex items-center gap-3">
-                              <span className="inline-flex items-center gap-1 text-slate-600">
-                                <Users className="h-3.5 w-3.5" />
-                                {dia.consultas} {dia.consultas === 1 ? 'consulta' : 'consultas'}
-                              </span>
-                              <span className="font-extrabold text-teal-800">
-                                +{formatarNumero(dia.minutos_economizados, 1)} min economizados
-                              </span>
-                            </div>
-                          </div>
-                          <div className="h-2.5 w-full rounded-full bg-slate-200 overflow-hidden">
-                            <div
-                              className="h-full rounded-full bg-gradient-to-r from-teal-600 to-emerald-500"
-                              style={{ width: `${Math.max(8, pct)}%` }}
-                            />
-                          </div>
-                        </div>
-                      )
-                    })}
-                </div>
-              )}
+              <details className="group mt-5 border-t border-slate-100 pt-4">
+                <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold text-ink">
+                  Ver tabela por dia
+                  <ChevronDown className="h-4 w-4 text-slate-400 transition group-open:rotate-180" />
+                </summary>
+                <table className="mt-3 w-full text-left text-sm">
+                  <thead className="text-xs text-ink-soft">
+                    <tr><th className="py-1.5 font-medium">Dia</th><th className="py-1.5 font-medium">Consultas</th><th className="py-1.5 text-right font-medium">Min. economizados</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {[...ultimos].reverse().map((d) => (
+                      <tr key={d.dia}>
+                        <td className="py-1.5 text-ink">{dataCurta(d.dia)}</td>
+                        <td className="py-1.5 text-ink-soft">{d.consultas}</td>
+                        <td className="py-1.5 text-right font-semibold text-ink">{formatarNumero(d.minutos_economizados, 0)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </details>
             </div>
           </section>
+
+          <p className="text-center text-xs text-ink-soft">{m.observacao}</p>
         </>
       )}
     </main>

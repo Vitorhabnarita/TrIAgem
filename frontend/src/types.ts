@@ -168,6 +168,8 @@ export interface TriagemContexto {
   texto_termo: string
   emergencia: ProtocoloEmergenciaPublico
   modalidade_emergencia: ModalidadeEmergencia | null
+  /** Opcional (cosmético): quando a API passar a expor o logotipo da clínica. */
+  logo_url?: string | null
 }
 
 export interface TriagemSubmissao {
